@@ -1076,29 +1076,60 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("deep-dive", {
 		description: "Explore a codebase (or a specific topic) and generate architecture docs",
 		getArgumentCompletions: (prefix: string) => {
-			const options = [
-				{ flag: "--depth shallow", label: "--depth shallow", description: "Quick overview (faster)" },
-				{ flag: "--depth medium", label: "--depth medium", description: "Standard depth (default)" },
-				{ flag: "--depth deep", label: "--depth deep", description: "Comprehensive analysis" },
-				{ flag: "--path", label: "--path <subdir>", description: "Subdirectory or file to focus on (can repeat)" },
-				{ flag: "--model claude-sonnet-4-5", label: "--model claude-sonnet-4-5", description: "Sonnet 4.5 (default)" },
-				{ flag: "--model claude-opus-4-6", label: "--model claude-opus-4-6", description: "Opus 4.6 (slow, expensive)" },
-				{ flag: "--model gpt-5.2-codex", label: "--model gpt-5.2-codex", description: "GPT 5.2 Codex" },
-				{ flag: "--help", label: "--help", description: "Show usage examples" },
+			// Flags that take a value and their possible completions
+			const flagValues: Record<string, Array<{ value: string; description: string }>> = {
+				"--depth": [
+					{ value: "shallow", description: "Quick overview (faster)" },
+					{ value: "medium", description: "Standard depth (default)" },
+					{ value: "deep", description: "Comprehensive analysis" },
+				],
+				"--model": [
+					{ value: "claude-sonnet-4-5", description: "Sonnet 4.5 (default)" },
+					{ value: "claude-opus-4-6", description: "Opus 4.6 (slow, expensive)" },
+					{ value: "gpt-5.2-codex", description: "GPT 5.2 Codex" },
+				],
+			};
+			// Flags (with descriptions for when we're completing the flag name itself)
+			const flags: Array<{ name: string; description: string }> = [
+				{ name: "--depth", description: "Exploration depth (shallow/medium/deep)" },
+				{ name: "--path", description: "Subdirectory to focus on (can repeat)" },
+				{ name: "--model", description: "Model to use" },
+				{ name: "--help", description: "Show usage examples" },
 			];
-			// prefix is the FULL argument text (e.g. "how auth works --de")
-			// Extract the last token to match against, keep the rest as-is
-			const lastSpace = prefix.lastIndexOf(" ");
-			const lastToken = lastSpace >= 0 ? prefix.slice(lastSpace + 1) : prefix;
-			const beforeLastToken = lastSpace >= 0 ? prefix.slice(0, lastSpace + 1) : "";
-			const filtered = options.filter(o => !lastToken || o.flag.startsWith(lastToken));
-			if (filtered.length === 0) return null;
-			// value must replace the entire prefix (applyCompletion does beforePrefix + value)
-			return filtered.map(o => ({
-				value: beforeLastToken + o.flag,
-				label: o.label,
-				description: o.description,
-			}));
+
+			// prefix is the FULL argument text, e.g. "how auth works --depth dee"
+			// Split into tokens to understand context
+			const tokens = prefix.split(/\s+/);
+			const lastToken = tokens[tokens.length - 1] || "";
+			const prevToken = tokens.length >= 2 ? tokens[tokens.length - 2] : "";
+			// Everything before the last token (keeps trailing space for reconstruction)
+			const beforeLastToken = prefix.slice(0, prefix.length - lastToken.length);
+
+			// Case 1: previous token is a flag that takes values — complete the value
+			if (prevToken in flagValues) {
+				const vals = flagValues[prevToken];
+				const filtered = vals.filter(v => !lastToken || v.value.startsWith(lastToken));
+				if (filtered.length === 0) return null;
+				return filtered.map(v => ({
+					value: beforeLastToken + v.value,
+					label: v.value,
+					description: v.description,
+				}));
+			}
+
+			// Case 2: last token starts with - — complete flag names
+			if (lastToken.startsWith("-")) {
+				const filtered = flags.filter(f => f.name.startsWith(lastToken));
+				if (filtered.length === 0) return null;
+				return filtered.map(f => ({
+					value: beforeLastToken + f.name,
+					label: f.name,
+					description: f.description,
+				}));
+			}
+
+			// Case 3: no match — let pi's default completion handle it
+			return null;
 		},
 		handler: async (args, ctx) => {
 			const parts = parseArgs(args ?? "");
