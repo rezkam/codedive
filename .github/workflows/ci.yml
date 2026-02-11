@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-26, macos-15, ubuntu-24.04]
-        node: [22]
+        node: [24, 25]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -25,18 +25,16 @@ jobs:
       - name: Install pi
         run: npm install -g @mariozechner/pi-coding-agent
 
-      - name: Install package locally
+      - name: Install package from git
         run: |
           mkdir -p /tmp/test-project && cd /tmp/test-project
-          pi install -l "$GITHUB_WORKSPACE"
+          pi install -l "https://github.com/${{ github.repository }}@${{ github.sha }}"
 
       - name: Verify extension discovery
         run: |
           cd /tmp/test-project
-          # Spawn pi in RPC mode, ask for registered commands, exit
           output=$(echo '{"type":"get_commands"}' | timeout 30 pi --mode rpc --no-session 2>/dev/null || true)
 
-          # Check that all three deep-dive commands are registered
           for cmd in deep-dive deep-dive-resume deep-dive-stop; do
             if echo "$output" | grep -q "\"name\":\"$cmd\""; then
               echo "✓ /$cmd registered"
@@ -47,19 +45,6 @@ jobs:
               exit 1
             fi
           done
-
-      - name: Verify extension source path
-        run: |
-          cd /tmp/test-project
-          output=$(echo '{"type":"get_commands"}' | timeout 30 pi --mode rpc --no-session 2>/dev/null || true)
-
-          # Verify commands come from our extension file
-          if echo "$output" | grep -q '"path":".*boring/pi-extensions/deep-dive/index.ts"'; then
-            echo "✓ Commands loaded from correct extension path"
-          else
-            echo "✗ Extension path mismatch"
-            exit 1
-          fi
 
       - name: Lint — no hardcoded user paths
         run: |
