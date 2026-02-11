@@ -317,6 +317,12 @@ test("returns null for non-flag tokens to allow default completion", () => {
     "Must return null for non-flag tokens to allow pi's default completions");
 });
 
+test("completion uses split not indexOf for token extraction", () => {
+  // Must handle multiple spaces, flags in any position, etc.
+  // split(/\\s+/) handles any whitespace arrangement
+  assert(src.includes('split(/\\s+/)'), "Must use split(/\\s+/) to handle arbitrary whitespace");
+});
+
 // ═══════════════════════════════════════════════════════════════════
 console.log("\n── No hardcoded paths ──");
 // ═══════════════════════════════════════════════════════════════════
