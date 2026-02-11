@@ -1,6 +1,6 @@
 # boring
 
-Extensions and skills for [pi](https://pi.dev) that are boring but good — production-ready tools for everyday development.
+Production-ready extensions and skills for [pi](https://pi.dev). Boring but good.
 
 ## Install
 
