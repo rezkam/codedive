@@ -285,42 +285,27 @@ test("ui.html pins highlight.js version", () => {
 console.log("\n── Tab completion ──");
 // ═══════════════════════════════════════════════════════════════════
 
-test("completions match last token, not full prefix", () => {
-  // The old code did: items.filter(i => i.value.startsWith(prefix))
-  // With prefix = "how auth works --de", nothing starts with that.
-  // Must extract last token and match against that.
-  assert(!src.includes('.filter(i => !prefix || i.value.startsWith(prefix))'),
-    "Found naive startsWith(prefix) filter — must match against last token, not full argument text");
-});
-
-test("completion values include preceding text for full replacement", () => {
-  // applyCompletion replaces the entire argumentText with item.value
-  // So value must be "how auth works --depth deep", not just "--depth deep"
-  assert(src.includes("beforeLastToken") || src.includes("beforeToken"),
-    "Completion values must prepend preceding text for correct replacement");
-});
-
 test("flag names and flag values are completed separately", () => {
-  // --de should complete to --depth (flag name only)
-  // --depth d should complete to --depth deep (flag value)
-  // These are two separate completion paths
   assert(src.includes("flagValues") || src.includes("flag_values"),
     "Missing flag value definitions — need separate flag name vs flag value completion");
   assert(src.includes('lastToken.startsWith("-")') || src.includes('lastToken.startsWith("--")'),
     "Missing flag name detection — need to detect when completing a flag vs a value");
 });
 
-test("returns null for non-flag tokens to allow default completion", () => {
-  // When the user types freeform prompt text (not a flag), return null
-  // so pi's default file path completion can work
+test("returns null for non-flag tokens (file completion fallback)", () => {
   assert(src.includes("return null"),
-    "Must return null for non-flag tokens to allow pi's default completions");
+    "Must return null for non-flag tokens so pi falls through to file completion");
 });
 
-test("completion uses split not indexOf for token extraction", () => {
-  // Must handle multiple spaces, flags in any position, etc.
-  // split(/\\s+/) handles any whitespace arrangement
-  assert(src.includes('split(/\\s+/)'), "Must use split(/\\s+/) to handle arbitrary whitespace");
+test("values are for last token only (pi prepends preceding text)", () => {
+  // Extension should NOT prepend argBefore — pi's getSuggestions does that.
+  // Values should be simple: "--depth", "shallow", "claude-sonnet-4-5", etc.
+  const completionBlock = src.slice(
+    src.indexOf("getArgumentCompletions"),
+    src.indexOf("handler: async")
+  );
+  assert(!completionBlock.includes("beforeLastToken"),
+    "Extension should not prepend preceding text — pi handles reconstruction");
 });
 
 // ═══════════════════════════════════════════════════════════════════
