@@ -1075,16 +1075,31 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("deep-dive", {
 		description: "Explore a codebase (or a specific topic) and generate architecture docs",
-		getArgumentCompletions: (prefix: string) => [
-			{ value: "--depth shallow", label: "--depth shallow", description: "Quick overview (faster)" },
-			{ value: "--depth medium", label: "--depth medium", description: "Standard depth (default)" },
-			{ value: "--depth deep", label: "--depth deep", description: "Comprehensive analysis" },
-			{ value: "--path", label: "--path <subdir>", description: "Subdirectory or file to focus on (can repeat)" },
-			{ value: "--model claude-sonnet-4-5", label: "--model claude-sonnet-4-5", description: "Sonnet 4.5 (default)" },
-			{ value: "--model claude-opus-4-6", label: "--model claude-opus-4-6", description: "Opus 4.6 (slow, expensive)" },
-			{ value: "--model gpt-5.2-codex", label: "--model gpt-5.2-codex", description: "GPT 5.2 Codex" },
-			{ value: "--help", label: "--help", description: "Show usage examples" },
-		].filter(i => !prefix || i.value.startsWith(prefix)),
+		getArgumentCompletions: (prefix: string) => {
+			const options = [
+				{ flag: "--depth shallow", label: "--depth shallow", description: "Quick overview (faster)" },
+				{ flag: "--depth medium", label: "--depth medium", description: "Standard depth (default)" },
+				{ flag: "--depth deep", label: "--depth deep", description: "Comprehensive analysis" },
+				{ flag: "--path", label: "--path <subdir>", description: "Subdirectory or file to focus on (can repeat)" },
+				{ flag: "--model claude-sonnet-4-5", label: "--model claude-sonnet-4-5", description: "Sonnet 4.5 (default)" },
+				{ flag: "--model claude-opus-4-6", label: "--model claude-opus-4-6", description: "Opus 4.6 (slow, expensive)" },
+				{ flag: "--model gpt-5.2-codex", label: "--model gpt-5.2-codex", description: "GPT 5.2 Codex" },
+				{ flag: "--help", label: "--help", description: "Show usage examples" },
+			];
+			// prefix is the FULL argument text (e.g. "how auth works --de")
+			// Extract the last token to match against, keep the rest as-is
+			const lastSpace = prefix.lastIndexOf(" ");
+			const lastToken = lastSpace >= 0 ? prefix.slice(lastSpace + 1) : prefix;
+			const beforeLastToken = lastSpace >= 0 ? prefix.slice(0, lastSpace + 1) : "";
+			const filtered = options.filter(o => !lastToken || o.flag.startsWith(lastToken));
+			if (filtered.length === 0) return null;
+			// value must replace the entire prefix (applyCompletion does beforePrefix + value)
+			return filtered.map(o => ({
+				value: beforeLastToken + o.flag,
+				label: o.label,
+				description: o.description,
+			}));
+		},
 		handler: async (args, ctx) => {
 			const parts = parseArgs(args ?? "");
 
