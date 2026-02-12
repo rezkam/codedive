@@ -313,7 +313,13 @@ function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[]
 		HLJS_CDN_JS
 	);
 
-	// 3. Ensure mermaid script exists (agent might have omitted or used wrong tag)
+	// 3. Fix mermaid theme — replace theme:"dark" with our readable base theme
+	doc = doc.replace(
+		/theme:\s*["']dark["']/g,
+		'theme:"base",themeVariables:{background:"#0c0c0f",primaryColor:"#1e1e2e",primaryTextColor:"#cdd6f4",primaryBorderColor:"#7c8aff",lineColor:"#6fcf97",secondaryColor:"#1a1a2e",tertiaryColor:"#13131a",noteTextColor:"#cdd6f4",noteBkgColor:"#1a1a2e",actorTextColor:"#cdd6f4",signalColor:"#cdd6f4",labelTextColor:"#cdd6f4",edgeLabelBackground:"#13131a",clusterBkg:"#1a1a2e",clusterBorder:"#7c8aff",titleColor:"#cdd6f4",nodeTextColor:"#cdd6f4"}'
+	);
+
+	// 4. Ensure mermaid script exists
 	if (!doc.includes("mermaid") || !doc.includes(MERMAID_CDN_URL)) {
 		const tag = `<script src="${MERMAID_CDN_URL}"></script>`;
 		if (doc.includes("</head>")) {
@@ -322,7 +328,7 @@ function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[]
 		}
 	}
 
-	// 4. Ensure highlight.js exists
+	// 5. Ensure highlight.js exists
 	if (!doc.includes("highlight") || !doc.includes(HLJS_CDN_JS)) {
 		const tags = `<link rel="stylesheet" href="${HLJS_CDN_CSS}">\n<script src="${HLJS_CDN_JS}"></script>\n<script>document.addEventListener("DOMContentLoaded",function(){hljs.highlightAll();});</script>`;
 		if (doc.includes("</head>")) {
@@ -331,7 +337,7 @@ function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[]
 		}
 	}
 
-	// 5. Ensure hljs.highlightAll() is called somewhere
+	// 6. Ensure hljs.highlightAll() is called somewhere
 	if (doc.includes(HLJS_CDN_JS) && !doc.includes("highlightAll")) {
 		const initScript = `<script>document.addEventListener("DOMContentLoaded",function(){if(typeof hljs!=="undefined")hljs.highlightAll();});</script>`;
 		if (doc.includes("</body>")) {
@@ -340,7 +346,7 @@ function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[]
 		}
 	}
 
-	// 6. Ensure Google Fonts loaded
+	// 7. Ensure Google Fonts loaded
 	if (!doc.includes("fonts.googleapis.com")) {
 		const link = `<link href="${GOOGLE_FONTS_URL}" rel="stylesheet">`;
 		if (doc.includes("</head>")) {
@@ -794,7 +800,7 @@ function startServer(): Promise<number> {
 					let doc = fs.readFileSync(S.htmlPath, "utf-8");
 					// Inject selection bridge, mermaid/hljs fallbacks, wheel blocker
 					const injectedScripts = `
-<script>if(typeof mermaid==="undefined"){var s=document.createElement("script");s.src="${MERMAID_CDN_URL}";s.onload=function(){mermaid.initialize({startOnLoad:true,theme:"dark"});mermaid.run();};document.head.appendChild(s);}<\/script>
+<script>if(typeof mermaid==="undefined"){var s=document.createElement("script");s.src="${MERMAID_CDN_URL}";s.onload=function(){mermaid.initialize({startOnLoad:true,theme:"base",themeVariables:{background:"#0c0c0f",primaryColor:"#1e1e2e",primaryTextColor:"#cdd6f4",primaryBorderColor:"#7c8aff",lineColor:"#6fcf97",secondaryColor:"#1a1a2e",tertiaryColor:"#13131a",noteTextColor:"#cdd6f4",noteBkgColor:"#1a1a2e",actorTextColor:"#cdd6f4",signalColor:"#cdd6f4",labelTextColor:"#cdd6f4",edgeLabelBackground:"#13131a",clusterBkg:"#1a1a2e",clusterBorder:"#7c8aff",titleColor:"#cdd6f4",nodeTextColor:"#cdd6f4"}});mermaid.run();};document.head.appendChild(s);}<\/script>
 <script>if(typeof hljs==="undefined"){var l=document.createElement("link");l.rel="stylesheet";l.href="${HLJS_CDN_CSS}";document.head.appendChild(l);var s=document.createElement("script");s.src="${HLJS_CDN_JS}";s.onload=function(){hljs.highlightAll();};document.head.appendChild(s);}<\/script>
 <script>
 // Selection bridge for "Ask about this"
@@ -1026,7 +1032,17 @@ Code highlighting (include in <head>):
   Call hljs.highlightAll() after DOMContentLoaded. Use <pre><code class="language-xxx"> for code blocks.
 Mermaid (include in <head> — IMPORTANT: use this EXACT URL, do not change the version):
   <script src="https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_CDN_VERSION}/dist/mermaid.min.js"><\/script>
-- NOT ES module imports. Dark theme config. Each in .mermaid-wrap with button zoom (NO scroll-to-zoom).
+- NOT ES module imports. Each in .mermaid-wrap with button zoom (NO scroll-to-zoom).
+- CRITICAL mermaid.initialize config — use EXACTLY this (the default dark theme has unreadable yellow nodes):
+  mermaid.initialize({ startOnLoad: true, theme: "base", themeVariables: {
+    background: "#0c0c0f", primaryColor: "#1e1e2e", primaryTextColor: "#cdd6f4",
+    primaryBorderColor: "#7c8aff", lineColor: "#6fcf97", secondaryColor: "#1a1a2e",
+    tertiaryColor: "#13131a", noteBkgColor: "#1a1a2e", noteTextColor: "#cdd6f4",
+    actorTextColor: "#cdd6f4", signalColor: "#cdd6f4", labelTextColor: "#cdd6f4",
+    sectionBkgColor: "#1a1a2e", altSectionBkgColor: "#13131a", sectionBkgColor2: "#1e1e2e",
+    edgeLabelBackground: "#13131a", clusterBkg: "#1a1a2e", clusterBorder: "#7c8aff",
+    titleColor: "#cdd6f4", nodeTextColor: "#cdd6f4"
+  }});
 - Drag-to-pan: use CSS transform translate() on the .mermaid element (NOT scrollLeft/scrollTop). Track panX/panY per wrapper.
   On mousedown set dragging=true, on mousemove update panX/panY, apply transform: translate(panX,panY) scale(zoom).
   This works at ALL zoom levels including 1x. Set cursor:grab on container, cursor:grabbing on :active.
