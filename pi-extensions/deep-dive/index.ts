@@ -25,21 +25,18 @@ import { Box, Text } from "@mariozechner/pi-tui";
 // State
 // ═══════════════════════════════════════════════════════════════════════
 // Pinned dependency versions (these are DIFFERENT packages with independent version numbers)
-const MERMAID_CDN_VERSION = "11.4.0";  // mermaid JS library — https://cdn.jsdelivr.net/npm/mermaid@VERSION
+// mermaid CDN version managed in template.html — no longer referenced here
 const MERMAID_CLI_VERSION = "11.4.2";  // @mermaid-js/mermaid-cli — used for npx validation only
-const HLJS_VERSION = "11.9.0";         // highlight.js — CDN for code syntax highlighting
+// highlight.js version managed in template.html — no longer referenced here
 
-// Mermaid theme — only controls fills, borders, and lines.
-// Text colors are NOT set so mermaid's base theme auto-contrast picks
-// dark text on light fills and light text on dark fills automatically.
-// Used in: sanitizer init directive, serve-time CSS fallback, prompt instructions.
-const MERMAID_THEME = {
-	accent: "#6ee7b7",    // borders, lines, arrows
-	fill: "#1a1a2e",      // default node/note background
-	bg: "#0c0c0f",        // diagram background
-	edgeLabelBg: "#13131a",
-} as const;
-const MERMAID_INIT_DIRECTIVE = `%%{init:{"theme":"base","themeVariables":{"primaryColor":"${MERMAID_THEME.fill}","primaryBorderColor":"${MERMAID_THEME.accent}","lineColor":"${MERMAID_THEME.accent}","secondaryColor":"${MERMAID_THEME.fill}","tertiaryColor":"${MERMAID_THEME.bg}","background":"${MERMAID_THEME.bg}","clusterBkg":"${MERMAID_THEME.bg}","clusterBorder":"${MERMAID_THEME.accent}","edgeLabelBackground":"${MERMAID_THEME.edgeLabelBg}","noteBkgColor":"${MERMAID_THEME.fill}","actorBorder":"${MERMAID_THEME.accent}","activationBorderColor":"${MERMAID_THEME.accent}"}}}%%`;
+// Template for generated HTML documents — owns all CDN deps, CSS, mermaid theme.
+// The agent writes body content only; buildDocument() wraps it in this template.
+const TEMPLATE_PATH = path.join(path.dirname(new URL(import.meta.url).pathname), "template.html");
+let _templateCache: string | null = null;
+function getTemplate(): string {
+	if (!_templateCache) _templateCache = fs.readFileSync(TEMPLATE_PATH, "utf-8");
+	return _templateCache;
+}
 // ═══════════════════════════════════════════════════════════════════════
 
 interface WsClient {
@@ -298,86 +295,101 @@ function rpcSend(cmd: Record<string, unknown>) {
 // Post-write document sanitization — fix CDN URLs and ensure dependencies
 // ═══════════════════════════════════════════════════════════════════════
 
-const MERMAID_CDN_URL = `https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_CDN_VERSION}/dist/mermaid.min.js`;
-const HLJS_CDN_CSS = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${HLJS_VERSION}/styles/atom-one-dark.min.css`;
-const HLJS_CDN_JS = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${HLJS_VERSION}/highlight.min.js`;
-const GOOGLE_FONTS_URL = "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap";
+// CDN URLs now live in template.html — the single source of truth
 
-function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[] } {
-	if (!fs.existsSync(htmlPath)) return { changed: false, fixes: [] };
-	let doc = fs.readFileSync(htmlPath, "utf-8");
-	const original = doc;
-	const fixes: string[] = [];
+// ═══════════════════════════════════════════════════════════════════════
+// Document builder — extracts body content from agent HTML, wraps in template
+// ═══════════════════════════════════════════════════════════════════════
 
-	// 1. Normalize mermaid CDN URLs to known-good version
-	doc = doc.replace(
-		/https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@[^/]+\/dist\/mermaid[^"'\s]*/g,
-		MERMAID_CDN_URL
-	);
+/**
+ * Strip style/color directives from mermaid diagram source.
+ * The template's mermaid.initialize() handles all theming centrally.
+ * Agents must only write graph structure (nodes, edges, subgraphs).
+ */
+function cleanMermaidBlock(code: string): string {
+	return code
+		.split("\n")
+		.filter(line => !line.trim().match(/^style\s+\S+\s+/))       // remove `style NodeA fill:...`
+		.filter(line => !line.trim().match(/^%%\{init:/))              // remove %%{init:...}%%
+		.filter(line => !line.trim().match(/^classDef\s+/))            // remove classDef
+		.filter(line => !line.trim().match(/^class\s+\S+\s+\S+$/))    // remove class assignments
+		.join("\n");
+}
 
-	// 2. Normalize highlight.js CDN URLs
-	doc = doc.replace(
-		/https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/highlight\.js\/[^/]+\/styles\/[^"'\s]*/g,
-		HLJS_CDN_CSS
-	);
-	doc = doc.replace(
-		/https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/highlight\.js\/[^/]+\/highlight\.min\.js/g,
-		HLJS_CDN_JS
-	);
+/**
+ * Extract <body> content from agent-generated HTML. Agents write full HTML docs
+ * but we only need the body. Also cleans mermaid blocks and converts to our
+ * template's container classes.
+ */
+function extractBodyContent(html: string): { title: string; body: string } {
+	// Extract title
+	const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+	const title = titleMatch ? titleMatch[1].trim() : "Deep Dive";
 
-	// 3. Force readable monochrome theme in every mermaid diagram via %%{init:}%% directive
-	doc = doc.replace(
-		/(<(?:div|pre)\s+class\s*=\s*"mermaid"[^>]*>)\s*\n?([\s\S]*?)(<\/(?:div|pre)>)/gi,
+	// Extract body content
+	const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+	let body = bodyMatch ? bodyMatch[1].trim() : html;
+
+	// If the agent wrote just content (no body tags), use as-is
+	if (!bodyMatch && !html.includes("<html")) {
+		body = html;
+	}
+
+	// Remove any <script> tags the agent included (template handles all JS)
+	body = body.replace(/<script[\s\S]*?<\/script>/gi, "");
+
+	// Clean mermaid blocks: strip style directives, wrap in our container
+	body = body.replace(
+		/(<(?:div|pre)\s+class\s*=\s*"mermaid"[^>]*>)([\s\S]*?)(<\/(?:div|pre)>)/gi,
 		(match, openTag, content, closeTag) => {
-			// Replace any existing init directive, or inject ours
-			const stripped = content.replace(/%%\{init:[\s\S]*?\}%%/g, '').replace(/^\s*\n/, '');
-			return `${openTag}\n${MERMAID_INIT_DIRECTIVE}\n${stripped}${closeTag}`;
+			const cleaned = cleanMermaidBlock(content);
+			return `${openTag}${cleaned}${closeTag}`;
 		}
 	);
 
-	// 4. Ensure mermaid script exists
-	if (!doc.includes("mermaid") || !doc.includes(MERMAID_CDN_URL)) {
-		const tag = `<script src="${MERMAID_CDN_URL}"></script>`;
-		if (doc.includes("</head>")) {
-			doc = doc.replace("</head>", `${tag}\n</head>`);
-			fixes.push("Injected missing mermaid script");
+	// Wrap bare <div class="mermaid"> in our .mermaid-box container if not already wrapped
+	body = body.replace(
+		/(?<!<div class="mermaid-box">[\s\S]{0,200})(<div class="mermaid"[^>]*>[\s\S]*?<\/div>)/gi,
+		(match, diagram) => {
+			// Check if already inside a mermaid-box or mermaid-wrap
+			if (match.includes("mermaid-box") || match.includes("mermaid-wrap")) return match;
+			return `<div class="mermaid-box">
+  <div class="controls">
+    <button class="zoom-in">+</button>
+    <button class="zoom-out">&minus;</button>
+    <button class="zoom-reset">Reset</button>
+  </div>
+  <div class="pan-area">
+    ${diagram}
+  </div>
+</div>`;
 		}
-	}
+	);
 
-	// 5. Ensure highlight.js exists
-	if (!doc.includes("highlight") || !doc.includes(HLJS_CDN_JS)) {
-		const tags = `<link rel="stylesheet" href="${HLJS_CDN_CSS}">\n<script src="${HLJS_CDN_JS}"></script>\n<script>document.addEventListener("DOMContentLoaded",function(){hljs.highlightAll();});</script>`;
-		if (doc.includes("</head>")) {
-			doc = doc.replace("</head>", `${tags}\n</head>`);
-			fixes.push("Injected missing highlight.js");
-		}
-	}
+	return { title, body };
+}
 
-	// 6. Ensure hljs.highlightAll() is called somewhere
-	if (doc.includes(HLJS_CDN_JS) && !doc.includes("highlightAll")) {
-		const initScript = `<script>document.addEventListener("DOMContentLoaded",function(){if(typeof hljs!=="undefined")hljs.highlightAll();});</script>`;
-		if (doc.includes("</body>")) {
-			doc = doc.replace("</body>", `${initScript}\n</body>`);
-			fixes.push("Injected hljs.highlightAll() call");
-		}
-	}
+/**
+ * Build final HTML document by wrapping agent content in our template.
+ * The template owns all CDN deps, CSS, mermaid theme, JS initialization.
+ */
+function buildDocument(htmlPath: string): { changed: boolean } {
+	if (!fs.existsSync(htmlPath)) return { changed: false };
+	const raw = fs.readFileSync(htmlPath, "utf-8");
+	const { title, body } = extractBodyContent(raw);
+	const template = getTemplate();
+	const doc = template
+		.replace("{{TITLE}}", title.replace(/</g, "&lt;"))
+		.replace("{{CONTENT}}", body);
+	fs.writeFileSync(htmlPath, doc);
+	agentLog(`Document built: extracted body, wrapped in template, cleaned mermaid blocks`);
+	return { changed: true };
+}
 
-	// 7. Ensure Google Fonts loaded
-	if (!doc.includes("fonts.googleapis.com")) {
-		const link = `<link href="${GOOGLE_FONTS_URL}" rel="stylesheet">`;
-		if (doc.includes("</head>")) {
-			doc = doc.replace("</head>", `${link}\n</head>`);
-			fixes.push("Injected missing Google Fonts");
-		}
-	}
-
-	const changed = doc !== original;
-	if (changed) {
-		if (original !== doc) fixes.unshift("CDN URLs normalized");
-		fs.writeFileSync(htmlPath, doc);
-		agentLog(`Document sanitized: ${fixes.join(", ")}`);
-	}
-	return { changed, fixes };
+// Back-compat alias used in existing code
+function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[] } {
+	const result = buildDocument(htmlPath);
+	return { changed: result.changed, fixes: result.changed ? ["Wrapped in template"] : [] };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -814,55 +826,13 @@ function startServer(): Promise<number> {
 				if (reqUrl2.searchParams.get("token") !== S.secret) { res.writeHead(403); res.end("Forbidden"); return; }
 				if (S.htmlPath && fs.existsSync(S.htmlPath)) {
 					let doc = fs.readFileSync(S.htmlPath, "utf-8");
-					// Inject selection bridge, mermaid/hljs fallbacks, wheel blocker
-					const injectedScripts = `
-<script>if(typeof mermaid==="undefined"){var s=document.createElement("script");s.src="${MERMAID_CDN_URL}";s.onload=function(){mermaid.initialize({startOnLoad:true,theme:"base"});mermaid.run();};document.head.appendChild(s);}<\/script>
-<script>if(typeof hljs==="undefined"){var l=document.createElement("link");l.rel="stylesheet";l.href="${HLJS_CDN_CSS}";document.head.appendChild(l);var s=document.createElement("script");s.src="${HLJS_CDN_JS}";s.onload=function(){hljs.highlightAll();};document.head.appendChild(s);}<\/script>
-<script>
-// Selection bridge for "Ask about this"
+					// Inject selection bridge for "Ask about this" (needs parent.postMessage, can't be in template)
+					const selectionBridge = `<script>
 document.addEventListener("mouseup",function(){var s=window.getSelection();var t=s&&s.toString().trim();if(!t||t.length<5){parent.postMessage({type:"dd-sel-clear"},"*");return;}var r=s.getRangeAt(0).getBoundingClientRect();parent.postMessage({type:"dd-sel",text:t,rect:{left:r.left,top:r.top,width:r.width,height:r.height}},"*");});
 document.addEventListener("mousedown",function(){parent.postMessage({type:"dd-sel-clear"},"*");});
-// Mermaid containers: allow normal page scroll, don't intercept wheel events
-// Syntax highlight code blocks
-document.addEventListener("DOMContentLoaded",function(){if(typeof hljs!=="undefined"){hljs.highlightAll();}});
-if(document.readyState==="complete"||document.readyState==="interactive"){if(typeof hljs!=="undefined"){hljs.highlightAll();}}
 <\/script>`;
-					if (doc.includes("</body>")) doc = doc.replace("</body>", `${injectedScripts}\n</body>`);
-					else doc += injectedScripts;
-					// Inject responsive overrides for nav and layout
-					doc = doc.replace("</head>", `<style id="dd-responsive">
-/* Deep Dive responsive overrides */
-nav, [class*="nav"], header > div, header > ul, header > nav {
-  flex-wrap: wrap !important; overflow-x: hidden !important; overflow: hidden !important;
-  scrollbar-width: none !important; -ms-overflow-style: none !important;
-}
-nav::-webkit-scrollbar, [class*="nav"]::-webkit-scrollbar,
-header::-webkit-scrollbar { display: none !important; }
-nav a, [class*="nav"] a, header a[href^="#"] {
-  white-space: nowrap; font-size: clamp(11px, 1.3vw, 14px); padding: 4px 8px !important;
-}
-/* Collapse nav to hamburger on narrow viewports */
-@media (max-width: 600px) {
-  nav, [class*="nav"], header > div { gap: 2px !important; }
-  nav a, [class*="nav"] a, header a[href^="#"] { font-size: 11px; padding: 3px 6px !important; }
-}
-/* Make content responsive */
-pre, code { overflow-x: auto; max-width: 100%; }
-img, svg { max-width: 100%; overflow: hidden; }
-.mermaid-wrap, [class*="mermaid"] { max-width: 100%; }
-table { display: block; overflow-x: auto; max-width: 100%; }
-body { overflow-x: hidden; }
-/* Mermaid fallback — only fills, borders, lines. No text color overrides
-   so mermaid auto-contrast and per-node style directives work correctly. */
-.cluster rect { fill: ${MERMAID_THEME.bg} !important; stroke: ${MERMAID_THEME.accent} !important; }
-.edgePath path, .flowchart-link { stroke: ${MERMAID_THEME.accent} !important; }
-marker path { fill: ${MERMAID_THEME.accent} !important; }
-.edgeLabel rect { fill: ${MERMAID_THEME.edgeLabelBg} !important; }
-.note rect, .note { fill: ${MERMAID_THEME.fill} !important; stroke: ${MERMAID_THEME.accent} !important; }
-.activation { fill: ${MERMAID_THEME.fill} !important; stroke: ${MERMAID_THEME.accent} !important; }
-.section0, .section1 { fill: ${MERMAID_THEME.fill} !important; }
-rect.task { fill: ${MERMAID_THEME.fill} !important; stroke: ${MERMAID_THEME.accent} !important; }
-</style>\n</head>`);
+					if (doc.includes("</body>")) doc = doc.replace("</body>", `${selectionBridge}\n</body>`);
+					else doc += selectionBridge;
 					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(doc);
 				} else {
 					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -1044,49 +1014,48 @@ Depth: ${depth} — ${depthGuide[depth] || depthGuide.medium}
 
 ${explorePhase}
 
-## Phase 2: Write HTML
+## Phase 2: Write HTML content
 IMPORTANT: Use the \`write\` tool (not bash/cat/heredoc) to create the file.
-Write a single self-contained HTML file to: ${outputPath}
+Write an HTML file to: ${outputPath}
 
-Design: dark theme (#0c0c0f bg, #13131a cards, #7c8aff accent, #6fcf97 green, #f0c674 yellow).
-Fonts (include these CDN links in the HTML <head>):
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  Space Grotesk for headings, Inter for body, JetBrains Mono for code.
-Code highlighting (include in <head>):
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${HLJS_VERSION}/styles/atom-one-dark.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${HLJS_VERSION}/highlight.min.js"><\/script>
-  Call hljs.highlightAll() after DOMContentLoaded. Use <pre><code class="language-xxx"> for code blocks.
-Mermaid (include in <head> — IMPORTANT: use this EXACT URL, do not change the version):
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_CDN_VERSION}/dist/mermaid.min.js"><\/script>
-  mermaid.initialize({ startOnLoad: true, theme: "base" });
-- NOT ES module imports. Each in .mermaid-wrap with button zoom (NO scroll-to-zoom).
-- Drag-to-pan: use CSS transform translate() on the .mermaid element (NOT scrollLeft/scrollTop). Track panX/panY per wrapper.
-  On mousedown set dragging=true, on mousemove update panX/panY, apply transform: translate(panX,panY) scale(zoom).
-  This works at ALL zoom levels including 1x. Set cursor:grab on container, cursor:grabbing on :active.
-- 5-15 nodes each. Use <br/> for multi-line labels.
-- CRITICAL: Do NOT use square brackets [] in sequence diagram message text — it triggers mermaid's "loop" keyword. Use () instead.
-- CRITICAL: Escape &amp; &lt; &gt; properly in HTML context.
-- CRITICAL: Every mermaid diagram MUST start with the init directive on its first line.
-  This sets fills and borders only. Do NOT set any text color variables (primaryTextColor,
-  nodeTextColor, etc.) — mermaid's base theme auto-contrast will pick dark or light text
-  based on each node's fill color. If you use per-node style directives (e.g. style A fill:#f0c674,color:#000),
-  they will work correctly because no global text color override exists. Example:
-  <div class="mermaid">
-  %%{init:{"theme":"base","themeVariables":{"primaryColor":"#1a1a2e","primaryBorderColor":"#6ee7b7","lineColor":"#6ee7b7","secondaryColor":"#1a1a2e","tertiaryColor":"#0c0c0f","background":"#0c0c0f","clusterBkg":"#0c0c0f","clusterBorder":"#6ee7b7","edgeLabelBackground":"#13131a","noteBkgColor":"#1a1a2e","actorBorder":"#6ee7b7"}}}%%
-  graph TD
-    A[Something] --> B[Other]
+The system wraps your output in a template that provides all CDN dependencies (fonts,
+highlight.js, mermaid), CSS design system, and JavaScript initialization. You write
+the body content only. Do NOT include <html>, <head>, <link>, <script>, or <style>
+tags. Start directly with your content.
+
+Available CSS classes from the template:
+  .hero           — centered header card (put h1 + subtitle p inside)
+  nav.sticky-nav  — sticky nav bar, put <a href="#id"> links inside
+  .metrics        — flex row of .metric-card items (each has .value + .label)
+  section         — card container for each content section
+  .callout        — info box (.callout.warning, .callout.danger, .callout.success)
+  .mermaid-box    — diagram container with zoom controls (see below)
+  pre > code      — code blocks (use class="language-xxx" for highlighting)
+  table, th, td   — styled tables
+
+Mermaid diagrams: write ONLY the graph structure (nodes, edges, subgraphs, labels).
+Do NOT include any styling: no \`style\` directives, no \`classDef\`, no \`%%{init:}%%\`,
+no color values. The template handles all colors, fonts, and theming centrally.
+Wrap each diagram like this:
+  <div class="mermaid-box">
+    <div class="controls">
+      <button class="zoom-in">+</button>
+      <button class="zoom-out">&minus;</button>
+      <button class="zoom-reset">Reset</button>
+    </div>
+    <div class="pan-area">
+      <div class="mermaid">
+      graph TD
+        A[Something] --> B[Other]
+      </div>
+    </div>
   </div>
-  Always include this exact %%{init:...}%% line as the FIRST line of every diagram. No exceptions.
-Responsive design:
-- The page is displayed inside an iframe that can be narrow (400-700px). ALL layout must work at small widths.
-- Sticky nav: use flex-wrap so items wrap to multiple rows instead of overflowing. No horizontal scrollbar.
-- If there are more than 6 nav sections, put a "Table of Contents" list at the top of the first section instead of cramming them all into the nav bar. Keep only the top 5-6 most important sections in the nav.
-- Metrics strip: use flex-wrap so cards wrap on narrow screens.
-- Code blocks: overflow-x: auto with max-width: 100%.
-- Mermaid diagrams: max-width: 100% on wrapper.
-- No fixed pixel widths on content containers. Use max-width + percentage/vw units.
 
-Include: sticky nav (responsive, wrapping), metrics strip, cards, code blocks, callouts.
+Diagram rules:
+- 5-15 nodes each. Use <br/> for multi-line labels.
+- Do NOT use square brackets [] in sequence diagram messages (triggers mermaid "loop" keyword). Use () instead.
+- Escape &amp; &lt; &gt; in HTML context.
+- Keep node IDs simple alphanumeric.
 ${contentGuide}
 
 After writing, the system will automatically validate your mermaid diagrams. If there are errors, you'll be asked to fix them.`;

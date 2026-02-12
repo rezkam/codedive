@@ -3,17 +3,19 @@
  *
  * Run: node pi-extensions/deep-dive/test.mjs
  *
- * Tests the serve-time injections, sanitization, and prompt for
- * correctness without needing a running server or browser.
+ * Tests the template, document builder, mermaid cleaning, and prompt
+ * for correctness without needing a running server or browser.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(__dirname, "index.ts"), "utf-8");
 const ui = readFileSync(join(__dirname, "ui.html"), "utf-8");
+const templatePath = join(__dirname, "template.html");
+const template = existsSync(templatePath) ? readFileSync(templatePath, "utf-8") : "";
 
 let pass = 0;
 let fail = 0;
@@ -22,10 +24,10 @@ function test(name, fn) {
   try {
     fn();
     pass++;
-    console.log(`  ✓ ${name}`);
+    console.log(`  \u2713 ${name}`);
   } catch (e) {
     fail++;
-    console.log(`  ✗ ${name}`);
+    console.log(`  \u2717 ${name}`);
     console.log(`    ${e.message}`);
   }
 }
@@ -34,75 +36,144 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg || "assertion failed");
 }
 
-// ── Extract the serve-time injection code from index.ts ──
-
-// Get the injected scripts block
-const injectedScriptsMatch = src.match(/const injectedScripts = `([\s\S]*?)`;/);
-const injectedScripts = injectedScriptsMatch ? injectedScriptsMatch[1] : "";
-
-// Get the responsive CSS block
-const responsiveCssMatch = src.match(/<style id="dd-responsive">([\s\S]*?)<\/style>/);
-const responsiveCss = responsiveCssMatch ? responsiveCssMatch[1] : "";
-
-// Get the sanitizeDocument function body
-const sanitizeFnMatch = src.match(/function sanitizeDocument[\s\S]*?^}/m);
-const sanitizeFn = sanitizeFnMatch ? sanitizeFnMatch[0] : "";
-
-// Get the prompt builder
-const promptMatch = src.match(/function buildExplorePrompt[\s\S]*?^}/m);
-const prompt = promptMatch ? promptMatch[0] : "";
-
 // ═══════════════════════════════════════════════════════════════════
-console.log("\n── Serve-time injections ──");
+console.log("\n── Template (template.html) ──");
 // ═══════════════════════════════════════════════════════════════════
 
-test("no wheel preventDefault on mermaid containers", () => {
-  // This was the bug: wheel events were blocked on mermaid diagrams,
-  // preventing normal page scroll
-  const hasWheelBlock = /addEventListener\s*\(\s*["']wheel["'][\s\S]*?preventDefault/.test(injectedScripts);
-  assert(!hasWheelBlock, "Found wheel preventDefault in injected scripts — this blocks page scrolling over diagrams");
+test("template.html exists", () => {
+  assert(template.length > 0, "template.html is missing or empty");
 });
 
-test("no overflow:hidden on mermaid-wrap", () => {
-  // overflow:hidden clips CSS transform translate() used for drag-to-pan
-  const mermaidOverflow = /\.mermaid-wrap[^}]*overflow\s*:\s*hidden/i.test(responsiveCss);
-  assert(!mermaidOverflow, "Found overflow:hidden on .mermaid-wrap — this breaks drag-to-pan");
+test("template has {{TITLE}} placeholder", () => {
+  assert(template.includes("{{TITLE}}"), "Missing {{TITLE}} placeholder");
 });
 
-test("no pointer-events:none on mermaid elements", () => {
-  const pointerNone = /mermaid[^}]*pointer-events\s*:\s*none/i.test(responsiveCss);
-  assert(!pointerNone, "Found pointer-events:none on mermaid — this breaks all interaction");
+test("template has {{CONTENT}} placeholder", () => {
+  assert(template.includes("{{CONTENT}}"), "Missing {{CONTENT}} placeholder");
 });
 
-test("no user-select:none on document body", () => {
-  // Allow text selection for the "Ask about this" feature
-  const noSelect = /body[^}]*user-select\s*:\s*none/i.test(responsiveCss);
-  assert(!noSelect, "Found user-select:none on body — this breaks text selection for 'Ask about this'");
+test("template includes mermaid CDN", () => {
+  assert(template.includes("mermaid"), "Missing mermaid in template");
+  const mermaidUrl = template.match(/mermaid@(\d+\.\d+\.\d+)/);
+  assert(mermaidUrl, "Mermaid CDN URL not pinned to specific version");
 });
 
-test("selection bridge postMessage exists", () => {
-  assert(injectedScripts.includes("dd-sel"), "Missing selection bridge postMessage (dd-sel)");
-  assert(injectedScripts.includes("dd-sel-clear"), "Missing selection clear postMessage (dd-sel-clear)");
+test("template includes highlight.js CDN", () => {
+  assert(template.includes("highlight.js"), "Missing highlight.js in template");
+  const hljsUrl = template.match(/highlight\.js\/(\d+\.\d+\.\d+)/);
+  assert(hljsUrl, "highlight.js CDN URL not pinned to specific version");
 });
 
-test("mermaid fallback injection exists", () => {
-  assert(injectedScripts.includes('typeof mermaid==="undefined"'), "Missing mermaid fallback check");
-  assert(injectedScripts.includes("mermaid.initialize"), "Missing mermaid.initialize in fallback");
+test("template includes Google Fonts", () => {
+  assert(template.includes("fonts.googleapis.com"), "Missing Google Fonts in template");
 });
 
-test("highlight.js fallback injection exists", () => {
-  assert(injectedScripts.includes('typeof hljs==="undefined"'), "Missing hljs fallback check");
-  assert(injectedScripts.includes("highlightAll"), "Missing hljs.highlightAll in fallback");
+test("template has mermaid.initialize with theme:base", () => {
+  assert(template.includes("mermaid.initialize"), "Missing mermaid.initialize");
+  assert(template.includes('"base"'), 'Missing theme:"base" in mermaid.initialize');
 });
 
-test("responsive CSS does not break mermaid interaction", () => {
-  // mermaid-wrap should only have max-width, no overflow or pointer restrictions
-  const mermaidRule = responsiveCss.match(/\.mermaid-wrap[^{]*\{([^}]*)\}/);
-  if (mermaidRule) {
-    const props = mermaidRule[1];
-    assert(!props.includes("overflow: hidden"), "overflow:hidden on mermaid-wrap breaks drag");
-    assert(!props.includes("pointer-events"), "pointer-events restriction on mermaid-wrap breaks interaction");
-  }
+test("template has themeVariables (not relying on defaults)", () => {
+  assert(template.includes("themeVariables"), "Missing themeVariables in mermaid config");
+  assert(template.includes("primaryColor"), "Missing primaryColor in themeVariables");
+  assert(template.includes("lineColor"), "Missing lineColor in themeVariables");
+});
+
+test("template CSS isolates mermaid labels from page styles", () => {
+  // p, span, li inside mermaid should inherit color, not use page-level rules
+  assert(template.includes(".mermaid-box .mermaid p"), "Missing mermaid p isolation");
+  assert(template.includes("color: inherit"), "Missing color:inherit for mermaid labels");
+});
+
+test("template has hljs.highlightAll()", () => {
+  assert(template.includes("highlightAll"), "Missing hljs.highlightAll() in template");
+});
+
+test("template has zoom/pan controls", () => {
+  assert(template.includes("zoom-in"), "Missing zoom-in in template");
+  assert(template.includes("zoom-out"), "Missing zoom-out in template");
+  assert(template.includes("zoom-reset"), "Missing zoom-reset in template");
+});
+
+test("template has drag-to-pan with CSS transform", () => {
+  assert(template.includes("translate("), "Missing CSS translate for pan");
+  assert(template.includes("cursor: grab") || template.includes("cursor:grab"), "Missing cursor:grab");
+});
+
+test("template has design system variables", () => {
+  assert(template.includes("--bg:"), "Missing --bg CSS variable");
+  assert(template.includes("--accent:"), "Missing --accent CSS variable");
+  assert(template.includes("--card:"), "Missing --card CSS variable");
+  assert(template.includes("--text:"), "Missing --text CSS variable");
+});
+
+test("template has dark scrollbar", () => {
+  assert(template.includes("::-webkit-scrollbar"), "Missing custom scrollbar styles");
+});
+
+// ═══════════════════════════════════════════════════════════════════
+console.log("\n── Document builder (index.ts) ──");
+// ═══════════════════════════════════════════════════════════════════
+
+test("buildDocument function exists", () => {
+  assert(src.includes("function buildDocument"), "Missing buildDocument function");
+});
+
+test("extractBodyContent function exists", () => {
+  assert(src.includes("function extractBodyContent"), "Missing extractBodyContent function");
+});
+
+test("cleanMermaidBlock strips style directives", () => {
+  assert(src.includes("cleanMermaidBlock"), "Missing cleanMermaidBlock function");
+  // Check it filters style, classDef, and init lines
+  assert(src.includes("style\\s+\\S+\\s+") || src.includes("^style\\s"), "Missing style directive filter");
+  assert(src.includes("classDef"), "Missing classDef filter");
+  assert(src.includes("%%{init:"), "Missing init directive filter");
+});
+
+test("extractBodyContent removes agent script tags", () => {
+  assert(src.includes("<script[\\s\\S]*?<\\/script>"), "Missing script tag removal regex");
+});
+
+test("selection bridge is injected at serve time", () => {
+  assert(src.includes("dd-sel"), "Missing selection bridge postMessage (dd-sel)");
+  assert(src.includes("dd-sel-clear"), "Missing selection clear postMessage");
+});
+
+test("no MERMAID_THEME constant (removed)", () => {
+  assert(!src.includes("const MERMAID_THEME"), "MERMAID_THEME still exists - should use template");
+});
+
+test("no MERMAID_INIT_DIRECTIVE constant (removed)", () => {
+  assert(!src.includes("const MERMAID_INIT_DIRECTIVE"), "MERMAID_INIT_DIRECTIVE still exists - should use template");
+});
+
+test("no CDN URL regex normalization (removed)", () => {
+  assert(!src.includes("HLJS_CDN_CSS"), "HLJS_CDN_CSS still exists - template handles CDN");
+  assert(!src.includes("HLJS_CDN_JS"), "HLJS_CDN_JS still exists - template handles CDN");
+});
+
+test("getTemplate loads template.html", () => {
+  assert(src.includes("getTemplate"), "Missing getTemplate function");
+  assert(src.includes("template.html"), "getTemplate doesn't reference template.html");
+});
+
+// ═══════════════════════════════════════════════════════════════════
+console.log("\n── Mermaid validation ──");
+// ═══════════════════════════════════════════════════════════════════
+
+test("MERMAID_CLI_VERSION is defined", () => {
+  assert(src.includes('const MERMAID_CLI_VERSION = "'), "Missing MERMAID_CLI_VERSION constant");
+});
+
+test("mermaid extraction matches both div and pre elements", () => {
+  const regex = src.match(/pre\|div/);
+  assert(regex, "Mermaid extraction regex should match both <pre> and <div> class='mermaid'");
+});
+
+test("validation uses mermaid-cli (not CDN)", () => {
+  assert(src.includes("@mermaid-js/mermaid-cli"), "Missing mermaid-cli for validation");
+  assert(src.includes("MERMAID_CLI_VERSION"), "Not using CLI version constant");
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -110,13 +181,11 @@ console.log("\n── Chat history & state signals ──");
 // ═══════════════════════════════════════════════════════════════════
 
 test("get_messages only sent for resumed sessions", () => {
-  // The get_messages request must be gated on isResumedSession
   assert(src.includes("S.isResumedSession") && src.includes("get_messages"),
     "get_messages should be gated on isResumedSession flag");
 });
 
 test("get_messages has one-shot guard (chatHistoryRequested)", () => {
-  // Must not fire on every health probe — needs a flag to prevent repeats
   assert(src.includes("S.chatHistoryRequested"), "Missing chatHistoryRequested one-shot guard");
   const gatedBlock = src.slice(
     src.indexOf("isResumedSession"),
@@ -126,7 +195,6 @@ test("get_messages has one-shot guard (chatHistoryRequested)", () => {
 });
 
 test("fresh session resets resume flags", () => {
-  // When /deep-dive starts fresh, isResumedSession must be false
   assert(src.includes("S.isResumedSession = false"), "Fresh session must set isResumedSession = false");
 });
 
@@ -135,108 +203,52 @@ test("resume session sets isResumedSession = true", () => {
 });
 
 test("stopAgent resets resume and chatHistory flags", () => {
-  // stopAgent must clear both flags to prevent stale state across sessions
   const stopBlock = src.slice(src.indexOf("function stopAll") - 500, src.indexOf("function stopAll"));
   assert(stopBlock.includes("S.isResumedSession = false"), "stopAgent must reset isResumedSession");
   assert(stopBlock.includes("S.chatHistoryRequested = false"), "stopAgent must reset chatHistoryRequested");
 });
 
 // ═══════════════════════════════════════════════════════════════════
-console.log("\n── Sanitization ──");
-// ═══════════════════════════════════════════════════════════════════
-
-test("sanitizeDocument normalizes mermaid CDN versions", () => {
-  assert(src.includes("mermaid@[^/]+"), "Missing mermaid version normalization regex");
-  assert(src.includes("MERMAID_CDN_URL"), "Not using MERMAID_CDN_URL constant");
-});
-
-test("sanitizeDocument normalizes highlight.js CDN versions", () => {
-  assert(src.includes("highlight\\.js\\/[^/]+"), "Missing hljs version normalization regex");
-  assert(src.includes("HLJS_CDN_CSS"), "Not using HLJS_CDN_CSS constant");
-  assert(src.includes("HLJS_CDN_JS"), "Not using HLJS_CDN_JS constant");
-});
-
-test("sanitizeDocument injects missing dependencies", () => {
-  assert(src.includes('Injected missing mermaid script'), "Missing mermaid injection path");
-  assert(src.includes('Injected missing highlight.js'), "Missing hljs injection path");
-  assert(src.includes('Injected missing Google Fonts'), "Missing Google Fonts injection path");
-});
-
-test("mermaid extraction matches both div and pre elements", () => {
-  const regex = src.match(/(<\?:pre\|div|pre\|div)/);
-  assert(regex, "Mermaid extraction regex should match both <pre> and <div> class='mermaid'");
-});
-
-// ═══════════════════════════════════════════════════════════════════
-console.log("\n── Version constants ──");
-// ═══════════════════════════════════════════════════════════════════
-
-test("MERMAID_CDN_VERSION is defined", () => {
-  assert(src.includes('const MERMAID_CDN_VERSION = "'), "Missing MERMAID_CDN_VERSION constant");
-});
-
-test("MERMAID_CLI_VERSION is defined", () => {
-  assert(src.includes('const MERMAID_CLI_VERSION = "'), "Missing MERMAID_CLI_VERSION constant");
-});
-
-test("HLJS_VERSION is defined", () => {
-  assert(src.includes('const HLJS_VERSION = "'), "Missing HLJS_VERSION constant");
-});
-
-test("CDN URLs use version constants (no hardcoded versions)", () => {
-  // After the constant definitions, all CDN references should use template literals
-  const afterConstants = src.slice(src.indexOf("const MERMAID_CDN_URL"));
-  // Should not have hardcoded mermaid versions in CDN URLs (except in comments or the constant definition itself)
-  const hardcodedMermaid = afterConstants.match(/mermaid@\d+\.\d+\.\d+/g) || [];
-  // Filter out the ones in regex patterns (which are for normalization)
-  const inCode = hardcodedMermaid.filter(m => {
-    const idx = afterConstants.indexOf(m);
-    const context = afterConstants.slice(Math.max(0, idx - 50), idx);
-    return !context.includes("regex") && !context.includes("/npm\\/") && !context.includes("@[^");
-  });
-  // There should be zero hardcoded versions outside of regex patterns
-  // (the template literal ${MERMAID_CDN_VERSION} won't match this pattern)
-});
-
-test("mermaid CDN and CLI versions are different (they are different packages)", () => {
-  const cdnMatch = src.match(/MERMAID_CDN_VERSION = "([^"]+)"/);
-  const cliMatch = src.match(/MERMAID_CLI_VERSION = "([^"]+)"/);
-  assert(cdnMatch && cliMatch, "Could not find version constants");
-  // They CAN be different - mermaid JS lib and @mermaid-js/mermaid-cli are separate packages
-  // Just verify both exist and are valid semver-like
-  assert(/^\d+\.\d+\.\d+$/.test(cdnMatch[1]), `Invalid CDN version: ${cdnMatch[1]}`);
-  assert(/^\d+\.\d+\.\d+$/.test(cliMatch[1]), `Invalid CLI version: ${cliMatch[1]}`);
-});
-
-// ═══════════════════════════════════════════════════════════════════
 console.log("\n── Agent prompt ──");
 // ═══════════════════════════════════════════════════════════════════
 
-test("prompt instructs drag-to-pan with CSS transform", () => {
-  assert(src.includes("Drag-to-pan"), "Missing drag-to-pan instruction in prompt");
-  assert(src.includes("translate"), "Missing CSS translate instruction for pan");
-  assert(src.includes("cursor:grab") || src.includes("cursor: grab"), "Missing cursor:grab instruction");
+test("prompt tells agent to write body content only", () => {
+  assert(src.includes("body content only") || src.includes("Do NOT include <html>"),
+    "Prompt should instruct agent to write body content only");
 });
 
-test("prompt says NO scroll-to-zoom", () => {
-  assert(src.includes("NO scroll-to-zoom"), "Missing NO scroll-to-zoom instruction");
+test("prompt lists available CSS classes", () => {
+  assert(src.includes(".hero"), "Prompt missing .hero class");
+  assert(src.includes("nav.sticky-nav"), "Prompt missing nav.sticky-nav class");
+  assert(src.includes(".mermaid-box"), "Prompt missing .mermaid-box class");
+  assert(src.includes(".callout"), "Prompt missing .callout class");
+  assert(src.includes(".metric-card"), "Prompt missing .metric-card class");
 });
 
-test("prompt instructs button zoom only", () => {
-  assert(src.includes("button zoom"), "Missing button zoom instruction");
+test("prompt tells agent to write structure-only mermaid", () => {
+  assert(src.includes("no `style` directives") || src.includes("no style directives") || 
+         src.includes("Do NOT include any styling") || src.includes("no \\`style\\` directives"),
+    "Prompt should forbid style directives in mermaid");
+  assert(src.includes("no `classDef`") || src.includes("no classDef") ||
+         src.includes("no \\`classDef\\`"),
+    "Prompt should forbid classDef in mermaid");
 });
 
-test("prompt includes exact mermaid CDN URL", () => {
-  assert(src.includes("IMPORTANT: use this EXACT URL"), "Missing exact URL instruction for mermaid CDN");
-});
-
-test("prompt includes highlight.js CDN instructions", () => {
-  assert(src.includes("highlight.js/${HLJS_VERSION}"), "Missing hljs version template in prompt");
-  assert(src.includes("hljs.highlightAll()"), "Missing hljs.highlightAll() instruction in prompt");
+test("prompt shows mermaid-box container pattern", () => {
+  assert(src.includes("mermaid-box"), "Prompt missing mermaid-box container example");
+  assert(src.includes("pan-area"), "Prompt missing pan-area in mermaid example");
 });
 
 test("prompt warns about square brackets in sequence diagrams", () => {
-  assert(src.includes("Do NOT use square brackets"), "Missing square bracket warning for mermaid");
+  assert(src.includes("Do NOT use square brackets") || src.includes("Do not use square brackets"),
+    "Missing square bracket warning for mermaid");
+});
+
+test("prompt does not include CDN URLs", () => {
+  // CDN URLs are in the template, not the prompt
+  const promptSection = src.slice(src.indexOf("Phase 2"), src.indexOf("Phase 2") + 3000);
+  assert(!promptSection.includes("cdn.jsdelivr.net"), "Prompt should not include CDN URLs (template handles them)");
+  assert(!promptSection.includes("cdnjs.cloudflare.com"), "Prompt should not include CDN URLs (template handles them)");
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -248,14 +260,12 @@ test("ui.html has chat_history handler", () => {
 });
 
 test("chat_history does not claim 'Document ready'", () => {
-  // chat_history just restores old messages — it must not say the doc is ready
-  // because the doc may still be generating. Only doc_ready should trigger that.
   const chatHistoryBlock = ui.slice(
     ui.indexOf("data.type === 'chat_history'"),
     ui.indexOf("return;", ui.indexOf("data.type === 'chat_history'")) + 10
   );
-  assert(!chatHistoryBlock.includes("Document ready"), "chat_history handler says 'Document ready' — only doc_ready should");
-  assert(!chatHistoryBlock.includes("docReady = true"), "chat_history handler sets docReady — only doc_ready event should");
+  assert(!chatHistoryBlock.includes("Document ready"), "chat_history handler says 'Document ready' - only doc_ready should");
+  assert(!chatHistoryBlock.includes("docReady = true"), "chat_history handler sets docReady - only doc_ready event should");
 });
 
 test("ui.html has chat persistence via sessionStorage", () => {

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITLE}}</title>
+
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Code highlighting -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+<!-- Mermaid -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+
+<style>
+/* ═══ Design system ═══ */
+:root {
+  --bg:        #0c0c0f;
+  --card:      #13131a;
+  --card-alt:  #1a1a24;
+  --border:    #2a2a3a;
+  --accent:    #7c8aff;
+  --green:     #6fcf97;
+  --yellow:    #f0c674;
+  --red:       #e06c75;
+  --text:      #d4d4d8;
+  --text-dim:  #71717a;
+  --heading:   #e4e4e7;
+  --font-heading: 'Space Grotesk', system-ui, sans-serif;
+  --font-body:    'Inter', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+/* ═══ Typography ═══ */
+h1, h2, h3, h4 {
+  font-family: var(--font-heading);
+  color: var(--heading);
+  margin-top: 2em;
+  margin-bottom: 0.5em;
+}
+h1 { font-size: clamp(28px, 4vw, 42px); color: var(--accent); margin-top: 0; }
+h2 { font-size: clamp(22px, 3vw, 30px); color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { font-size: clamp(17px, 2vw, 22px); }
+p  { margin-bottom: 16px; }
+a  { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: var(--heading); }
+hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+/* ═══ Layout containers ═══ */
+.hero {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: clamp(24px, 4vw, 48px);
+  text-align: center;
+  margin-bottom: 32px;
+}
+.hero h1 { margin-bottom: 8px; }
+.hero p { color: var(--text-dim); font-size: 17px; margin: 0; }
+
+/* ═══ Navigation ═══ */
+nav.sticky-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 32px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: center;
+}
+nav.sticky-nav a {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+nav.sticky-nav a:hover { color: var(--accent); background: rgba(124, 138, 255, 0.1); text-decoration: none; }
+
+/* ═══ Metrics strip ═══ */
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.metric-card {
+  flex: 1 1 150px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+}
+.metric-card .value {
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.metric-card .label { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+
+/* ═══ Section cards ═══ */
+section {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: clamp(20px, 3vw, 32px);
+  margin-bottom: 24px;
+}
+
+/* ═══ Callout boxes ═══ */
+.callout {
+  border-left: 3px solid var(--accent);
+  background: rgba(124, 138, 255, 0.06);
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  margin: 16px 0;
+}
+.callout.warning { border-color: var(--yellow); background: rgba(240, 198, 116, 0.06); }
+.callout.danger  { border-color: var(--red);    background: rgba(224, 108, 117, 0.06); }
+.callout.success { border-color: var(--green);  background: rgba(111, 207, 151, 0.06); }
+
+/* ═══ Code blocks ═══ */
+pre {
+  background: #1a1a24;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 1.5;
+}
+code { font-family: var(--font-mono); }
+:not(pre) > code {
+  background: rgba(124, 138, 255, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+/* ═══ Tables ═══ */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  display: block;
+  overflow-x: auto;
+}
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--heading); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+tr:hover td { background: rgba(124, 138, 255, 0.03); }
+
+/* ═══ Lists ═══ */
+ul, ol { margin-left: 20px; margin-bottom: 16px; }
+li { margin-bottom: 6px; }
+
+/* ═══ Mermaid diagrams ═══ */
+.mermaid-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  overflow: hidden;
+  position: relative;
+}
+.mermaid-box .controls {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.mermaid-box .controls button {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.mermaid-box .controls button:hover { color: var(--accent); border-color: var(--accent); }
+.mermaid-box .pan-area {
+  cursor: grab;
+  overflow: hidden;
+}
+.mermaid-box .pan-area:active { cursor: grabbing; }
+/* Mermaid SVG text isolation: prevent page-level p/li/span rules from
+   bleeding into foreignObject labels. This inherits color from the
+   mermaid style directives instead of the page stylesheet. */
+.mermaid-box .mermaid p,
+.mermaid-box .mermaid span,
+.mermaid-box .mermaid li,
+.mermaid-box .mermaid ul,
+.mermaid-box .mermaid ol,
+.mermaid-box .mermaid div {
+  color: inherit;
+  fill: inherit;
+  margin: 0;
+  padding: 0;
+}
+
+/* ═══ Dark scrollbar ═══ */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a4a; }
+</style>
+</head>
+<body>
+
+{{CONTENT}}
+
+<script>
+// ═══ Highlight.js init ═══
+document.addEventListener("DOMContentLoaded", function() {
+  if (typeof hljs !== "undefined") hljs.highlightAll();
+});
+
+// ═══ Mermaid init — single theme, no per-diagram overrides needed ═══
+mermaid.initialize({
+  startOnLoad: true,
+  theme: "base",
+  themeVariables: {
+    // Dark fills
+    background:        "#0c0c0f",
+    primaryColor:      "#1a1a2e",
+    secondaryColor:    "#1a1a2e",
+    tertiaryColor:     "#13131a",
+    // Light text — auto-contrast handles per-node overrides
+    primaryTextColor:  "#e2e8f0",
+    // Single accent for all lines and borders
+    primaryBorderColor:"#6ee7b7",
+    lineColor:         "#6ee7b7",
+    // Subgraphs
+    clusterBkg:        "#0c0c0f",
+    clusterBorder:     "#6ee7b7",
+    // Labels
+    edgeLabelBackground: "#13131a",
+    nodeTextColor:     "#e2e8f0",
+    // Notes
+    noteBkgColor:      "#1a1a2e",
+    noteTextColor:     "#e2e8f0",
+    // Sequence diagrams
+    actorTextColor:    "#e2e8f0",
+    actorBorder:       "#6ee7b7",
+    signalColor:       "#e2e8f0",
+    labelTextColor:    "#e2e8f0",
+    activationBorderColor: "#6ee7b7",
+    // Title
+    titleColor:        "#e2e8f0"
+  }
+});
+
+// ═══ Diagram zoom & pan ═══
+document.querySelectorAll(".mermaid-box").forEach(function(box) {
+  var area = box.querySelector(".pan-area");
+  var diagram = area && area.querySelector(".mermaid");
+  if (!area || !diagram) return;
+  var state = { zoom: 1, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+
+  function apply() {
+    diagram.style.transform = "translate(" + state.panX + "px," + state.panY + "px) scale(" + state.zoom + ")";
+    diagram.style.transformOrigin = "top left";
+  }
+
+  box.querySelector(".zoom-in")?.addEventListener("click", function() { state.zoom *= 1.2; apply(); });
+  box.querySelector(".zoom-out")?.addEventListener("click", function() { state.zoom /= 1.2; apply(); });
+  box.querySelector(".zoom-reset")?.addEventListener("click", function() { state.zoom = 1; state.panX = 0; state.panY = 0; apply(); });
+
+  area.addEventListener("mousedown", function(e) { state.dragging = true; state.startX = e.clientX - state.panX; state.startY = e.clientY - state.panY; });
+  document.addEventListener("mousemove", function(e) { if (!state.dragging) return; state.panX = e.clientX - state.startX; state.panY = e.clientY - state.startY; apply(); });
+  document.addEventListener("mouseup", function() { state.dragging = false; });
+});
+
+// ═══ Smooth scroll for nav links ═══
+document.querySelectorAll('nav.sticky-nav a[href^="#"]').forEach(function(a) {
+  a.addEventListener("click", function(e) {
+    var target = document.querySelector(this.getAttribute("href"));
+    if (target) { e.preventDefault(); target.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  });
+});
+</script>
+</body>
+</html>
