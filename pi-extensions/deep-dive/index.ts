@@ -313,10 +313,15 @@ function sanitizeDocument(htmlPath: string): { changed: boolean; fixes: string[]
 		HLJS_CDN_JS
 	);
 
-	// 3. Fix mermaid theme — replace theme:"dark" with our readable base theme
+	// 3. Force readable theme in every mermaid diagram via %%{init:}%% directive
+	const mermaidInitDirective = '%%{init:{"theme":"base","themeVariables":{"primaryColor":"#1e1e2e","primaryTextColor":"#cdd6f4","primaryBorderColor":"#7c8aff","lineColor":"#6fcf97","secondaryColor":"#1a1a2e","tertiaryColor":"#13131a","clusterBkg":"#1a1a2e","clusterBorder":"#7c8aff","edgeLabelBackground":"#13131a","nodeTextColor":"#cdd6f4"}}}%%';
 	doc = doc.replace(
-		/theme:\s*["']dark["']/g,
-		'theme:"base",themeVariables:{background:"#0c0c0f",primaryColor:"#1e1e2e",primaryTextColor:"#cdd6f4",primaryBorderColor:"#7c8aff",lineColor:"#6fcf97",secondaryColor:"#1a1a2e",tertiaryColor:"#13131a",noteTextColor:"#cdd6f4",noteBkgColor:"#1a1a2e",actorTextColor:"#cdd6f4",signalColor:"#cdd6f4",labelTextColor:"#cdd6f4",edgeLabelBackground:"#13131a",clusterBkg:"#1a1a2e",clusterBorder:"#7c8aff",titleColor:"#cdd6f4",nodeTextColor:"#cdd6f4"}'
+		/(<(?:div|pre)\s+class\s*=\s*"mermaid"[^>]*>)\s*\n?([\s\S]*?)(<\/(?:div|pre)>)/gi,
+		(match, openTag, content, closeTag) => {
+			// Replace any existing init directive, or inject ours
+			const stripped = content.replace(/%%\{init:[\s\S]*?\}%%/g, '').replace(/^\s*\n/, '');
+			return `${openTag}\n${mermaidInitDirective}\n${stripped}${closeTag}`;
+		}
 	);
 
 	// 4. Ensure mermaid script exists
@@ -800,7 +805,7 @@ function startServer(): Promise<number> {
 					let doc = fs.readFileSync(S.htmlPath, "utf-8");
 					// Inject selection bridge, mermaid/hljs fallbacks, wheel blocker
 					const injectedScripts = `
-<script>if(typeof mermaid==="undefined"){var s=document.createElement("script");s.src="${MERMAID_CDN_URL}";s.onload=function(){mermaid.initialize({startOnLoad:true,theme:"base",themeVariables:{background:"#0c0c0f",primaryColor:"#1e1e2e",primaryTextColor:"#cdd6f4",primaryBorderColor:"#7c8aff",lineColor:"#6fcf97",secondaryColor:"#1a1a2e",tertiaryColor:"#13131a",noteTextColor:"#cdd6f4",noteBkgColor:"#1a1a2e",actorTextColor:"#cdd6f4",signalColor:"#cdd6f4",labelTextColor:"#cdd6f4",edgeLabelBackground:"#13131a",clusterBkg:"#1a1a2e",clusterBorder:"#7c8aff",titleColor:"#cdd6f4",nodeTextColor:"#cdd6f4"}});mermaid.run();};document.head.appendChild(s);}<\/script>
+<script>if(typeof mermaid==="undefined"){var s=document.createElement("script");s.src="${MERMAID_CDN_URL}";s.onload=function(){mermaid.initialize({startOnLoad:true,theme:"base"});mermaid.run();};document.head.appendChild(s);}<\/script>
 <script>if(typeof hljs==="undefined"){var l=document.createElement("link");l.rel="stylesheet";l.href="${HLJS_CDN_CSS}";document.head.appendChild(l);var s=document.createElement("script");s.src="${HLJS_CDN_JS}";s.onload=function(){hljs.highlightAll();};document.head.appendChild(s);}<\/script>
 <script>
 // Selection bridge for "Ask about this"
@@ -836,6 +841,24 @@ img, svg { max-width: 100%; overflow: hidden; }
 .mermaid-wrap, [class*="mermaid"] { max-width: 100%; }
 table { display: block; overflow-x: auto; max-width: 100%; }
 body { overflow-x: hidden; }
+/* Force readable mermaid colors — overrides any theme the agent picked */
+.node rect, .node polygon, .node circle, .node ellipse,
+.node .label-container { fill: #1e1e2e !important; stroke: #7c8aff !important; }
+.nodeLabel, .node .label, .edgeLabel, .label text,
+.cluster-label .nodeLabel { color: #cdd6f4 !important; fill: #cdd6f4 !important; }
+.cluster rect { fill: #1a1a2e !important; stroke: #7c8aff !important; }
+.edgePath path, .flowchart-link { stroke: #6fcf97 !important; }
+marker path { fill: #6fcf97 !important; }
+.edgeLabel rect { fill: #13131a !important; }
+.actor { fill: #1e1e2e !important; stroke: #7c8aff !important; }
+.actor-line { stroke: #3a3a5a !important; }
+text.actor-label, .messageText, .loopText, .noteText { fill: #cdd6f4 !important; }
+.note rect, .note { fill: #1a1a2e !important; stroke: #7c8aff !important; }
+.activation { fill: #2a2a4a !important; }
+.section0, .section1 { fill: #1a1a2e !important; }
+.task, .taskText { fill: #cdd6f4 !important; }
+rect.task { fill: #1e1e2e !important; stroke: #7c8aff !important; }
+.titleText { fill: #cdd6f4 !important; }
 </style>\n</head>`);
 					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(doc);
 				} else {
@@ -1032,23 +1055,22 @@ Code highlighting (include in <head>):
   Call hljs.highlightAll() after DOMContentLoaded. Use <pre><code class="language-xxx"> for code blocks.
 Mermaid (include in <head> — IMPORTANT: use this EXACT URL, do not change the version):
   <script src="https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_CDN_VERSION}/dist/mermaid.min.js"><\/script>
+  mermaid.initialize({ startOnLoad: true, theme: "base" });
 - NOT ES module imports. Each in .mermaid-wrap with button zoom (NO scroll-to-zoom).
-- CRITICAL mermaid.initialize config — use EXACTLY this (the default dark theme has unreadable yellow nodes):
-  mermaid.initialize({ startOnLoad: true, theme: "base", themeVariables: {
-    background: "#0c0c0f", primaryColor: "#1e1e2e", primaryTextColor: "#cdd6f4",
-    primaryBorderColor: "#7c8aff", lineColor: "#6fcf97", secondaryColor: "#1a1a2e",
-    tertiaryColor: "#13131a", noteBkgColor: "#1a1a2e", noteTextColor: "#cdd6f4",
-    actorTextColor: "#cdd6f4", signalColor: "#cdd6f4", labelTextColor: "#cdd6f4",
-    sectionBkgColor: "#1a1a2e", altSectionBkgColor: "#13131a", sectionBkgColor2: "#1e1e2e",
-    edgeLabelBackground: "#13131a", clusterBkg: "#1a1a2e", clusterBorder: "#7c8aff",
-    titleColor: "#cdd6f4", nodeTextColor: "#cdd6f4"
-  }});
 - Drag-to-pan: use CSS transform translate() on the .mermaid element (NOT scrollLeft/scrollTop). Track panX/panY per wrapper.
   On mousedown set dragging=true, on mousemove update panX/panY, apply transform: translate(panX,panY) scale(zoom).
   This works at ALL zoom levels including 1x. Set cursor:grab on container, cursor:grabbing on :active.
 - 5-15 nodes each. Use <br/> for multi-line labels.
 - CRITICAL: Do NOT use square brackets [] in sequence diagram message text — it triggers mermaid's "loop" keyword. Use () instead.
 - CRITICAL: Escape &amp; &lt; &gt; properly in HTML context.
+- CRITICAL: Every mermaid diagram MUST start with the init directive on its first line to set colors.
+  This is the ONLY way to get readable colors. Example:
+  <div class="mermaid">
+  %%{init:{"theme":"base","themeVariables":{"primaryColor":"#1e1e2e","primaryTextColor":"#cdd6f4","primaryBorderColor":"#7c8aff","lineColor":"#6fcf97","secondaryColor":"#1a1a2e","tertiaryColor":"#13131a","clusterBkg":"#1a1a2e","clusterBorder":"#7c8aff","edgeLabelBackground":"#13131a","nodeTextColor":"#cdd6f4"}}}%%
+  graph TD
+    A[Something] --> B[Other]
+  </div>
+  Always include this exact %%{init:...}%% line as the FIRST line of every diagram. No exceptions.
 Responsive design:
 - The page is displayed inside an iframe that can be narrow (400-700px). ALL layout must work at small widths.
 - Sticky nav: use flex-wrap so items wrap to multiple rows instead of overflowing. No horizontal scrollbar.
