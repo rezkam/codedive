@@ -16,7 +16,8 @@ export default defineConfig({
 				"vitest.config.ts",
 			],
 		},
-		include: ["src/**/*.{test,spec}.ts", "tests/**/*.{test,spec}.ts"],
+		include: ["src/**/*.{test,spec}.ts", "tests/integration/**/*.{test,spec}.ts"],
+		exclude: ["tests/browser/**"],
 		testTimeout: 10000,
 	},
 });

@@ -1,5 +1,5 @@
 /**
- * Deep Dive — Core engine.
+ * CodeDive — Core engine.
  *
  * Manages the in-process agent session, HTTP/WS server, validation loop,
  * health monitoring, and auto-restart.  Replaces the old subprocess-based
@@ -18,6 +18,7 @@ import {
 	AuthStorage,
 	createAgentSession,
 	createCodingTools,
+	createReadOnlyTools,
 	DefaultResourceLoader,
 	ModelRegistry,
 	SessionManager,
@@ -25,6 +26,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 
 import { createAuthStorage } from "./auth.js";
+import { createSafeBashTool } from "./safe-bash.js";
 import {
 	APP_NAME,
 	DEFAULT_PORT,
@@ -97,6 +99,8 @@ interface EngineState {
 	provider: string;
 	// Whether current model is using OAuth/subscription
 	isSubscription: boolean;
+	// Whether file editing is allowed (--dangerously-allow-edits)
+	allowEdits: boolean;
 	// Pending tool write tracking
 	pendingWritePaths: Map<string, string>;
 	pendingToolTimers: Map<string, number>;
@@ -151,6 +155,7 @@ function createState(): EngineState {
 		modelRegistry: null,
 		provider: "",
 		isSubscription: false,
+		allowEdits: false,
 		pendingWritePaths: new Map(),
 		pendingToolTimers: new Map(),
 		piSessionManager: null,
@@ -207,7 +212,7 @@ async function createSession(targetPath: string, sessionManager?: SessionManager
 	// Create settings manager
 	const settingsManager = SettingsManager.create(targetPath, GLOBAL_DIR);
 
-	// Create resource loader with custom skill paths (only deep-dive directories)
+	// Create resource loader with custom skill paths (only codedive directories)
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: targetPath,
 		agentDir: GLOBAL_DIR,
@@ -224,8 +229,24 @@ async function createSession(targetPath: string, sessionManager?: SessionManager
 			});
 			return { skills: filtered, diagnostics: base.diagnostics };
 		},
-		// Custom system prompt — Deep Dive branding
-		systemPrompt: `You are Deep Dive, a codebase architecture explorer. You read codebases, understand their structure, and generate comprehensive architecture documentation with diagrams. You also answer questions about code you've explored.
+		// Custom system prompt — CodeDive branding
+		systemPrompt: S.allowEdits
+			? `You are CodeDive, a codebase architecture explorer. You read codebases, understand their structure, and generate comprehensive architecture documentation with diagrams. You also answer questions about code you've explored.
+
+When responding to questions, use well-structured markdown: headings (##), bullet lists, fenced code blocks with language tags, tables, bold/italic for emphasis. Keep responses clear and organized.`
+			: `You are CodeDive, a codebase architecture explorer. You read codebases, understand their structure, and generate comprehensive architecture documentation with diagrams. You also answer questions about code you've explored.
+
+IMPORTANT: You are running in READ-ONLY mode. You must NOT:
+- Edit, create, delete, or modify any files in the codebase
+- Run bash commands that write, move, copy, or delete files
+- Use output redirects (>, >>), sed -i, or any in-place editing
+- Run package managers (npm install, pip install, etc.)
+- Run build commands (make, cmake, cargo build, etc.)
+- Execute inline scripts (python -c, node -e) that could modify files
+
+The ONLY file you may write to is the architecture document file (via the write tool provided). All other writes will be blocked.
+
+You CAN: read files, grep, find, ls, cat, head, tail, wc, git log, git diff, git show, and other analysis commands.
 
 When responding to questions, use well-structured markdown: headings (##), bullet lists, fenced code blocks with language tags, tables, bold/italic for emphasis. Keep responses clear and organized.`,
 		agentsFilesOverride: () => ({ agentsFiles: [] }), // Don't load AGENTS.md / CLAUDE.md
@@ -235,7 +256,11 @@ When responding to questions, use well-structured markdown: headings (##), bulle
 	const smgr = sessionManager ?? SessionManager.create(targetPath, path.join(targetPath, LOCAL_DIR_NAME, S.sessionId));
 	S.piSessionManager = smgr;
 
-	const tools = createCodingTools(targetPath);
+	// In read-only mode (default): read-only tools + safe bash (blocks file writes)
+	// In edit mode (--dangerously-allow-edits): full coding tools (read, bash, edit, write)
+	const tools = S.allowEdits
+		? createCodingTools(targetPath)
+		: [...createReadOnlyTools(targetPath), createSafeBashTool(targetPath)];
 
 	const { session, modelFallbackMessage } = await createAgentSession({
 		cwd: targetPath,
@@ -267,9 +292,9 @@ When responding to questions, use well-structured markdown: headings (##), bulle
 
 function getSkillPaths(targetPath: string): string[] {
 	const paths: string[] = [];
-	// Global: ~/.deep-dive/skills/
+	// Global: ~/.codedive/skills/
 	if (fs.existsSync(GLOBAL_SKILLS_DIR)) paths.push(GLOBAL_SKILLS_DIR);
-	// Project: .deep-dive/skills/
+	// Project: .codedive/skills/
 	const localSkills = path.join(targetPath, LOCAL_DIR_NAME, "skills");
 	if (fs.existsSync(localSkills)) paths.push(localSkills);
 	return paths;
@@ -665,7 +690,7 @@ function startServer(): Promise<number> {
 					const bodyPath = S.htmlPath.replace(/\.html$/, ".body.html");
 					const { title, body } = JSON.parse(fs.readFileSync(bodyPath, "utf-8"));
 					let doc = getTemplate()
-						.replace("{{TITLE}}", (title || "Deep Dive").replace(/</g, "&lt;"))
+						.replace("{{TITLE}}", (title || "CodeDive").replace(/</g, "&lt;"))
 						.replace("{{CONTENT}}", body);
 					// Inject selection bridge for "Ask about this"
 					const selectionBridge = `<script>
@@ -762,6 +787,14 @@ document.addEventListener("mousedown",function(){parent.postMessage({type:"dd-se
 								S.logger.log(`Model change error: ${err}`);
 								broadcast({ type: "model_change_error", error: String(err) });
 							});
+						} else if (msg.type === "load_history") {
+							// Client requested full chat history (e.g. scroll to top)
+							const all = extractChatMessages();
+							client.send(JSON.stringify({
+								type: "chat_history",
+								messages: all,
+								isFullHistory: true,
+							}));
 						}
 					});
 
@@ -795,6 +828,17 @@ document.addEventListener("mousedown",function(){parent.postMessage({type:"dd-se
 					// Replay full event history so late-joining clients see everything
 					for (const event of S.eventHistory) {
 						client.send(JSON.stringify(event));
+					}
+
+					// Send recent chat history from the agent session
+					// This restores chat messages after WebSocket reconnects
+					const recentChat = extractChatMessages(RECENT_CHAT_LIMIT);
+					if (recentChat.length > 0) {
+						client.send(JSON.stringify({
+							type: "chat_history",
+							messages: recentChat,
+							isFullHistory: false,
+						}));
 					}
 				}
 			} else {
@@ -894,7 +938,7 @@ function removePidFile(cwd: string) {
 }
 
 /**
- * Send SIGTERM to the running deep-dive process (from a separate terminal).
+ * Send SIGTERM to the running codedive process (from a separate terminal).
  * Returns true if a process was found and signalled.
  */
 export function stopExternal(cwd: string): boolean {
@@ -924,6 +968,8 @@ export interface StartOptions {
 	depth?: string;
 	model?: string;
 	scope?: string;
+	/** Allow the agent to edit/write/delete files (default: false, read-only). */
+	allowEdits?: boolean;
 	/** Called once when the agent is confirmed running (first agent_start event). */
 	onReady?: () => void;
 	/** Override session factory (for testing without real API keys). */
@@ -937,6 +983,8 @@ export interface StartOptions {
 export interface ResumeOptions {
 	cwd: string;
 	meta: SessionMeta;
+	/** Allow the agent to edit/write/delete files (default: false, read-only). */
+	allowEdits?: boolean;
 	/** Called once when the agent is confirmed running (first agent_start event). */
 	onReady?: () => void;
 	/** Override auth storage (for programmatic/embedded use). */
@@ -944,7 +992,7 @@ export interface ResumeOptions {
 }
 
 /**
- * Start a new deep-dive exploration.
+ * Start a new codedive exploration.
  */
 export async function start(opts: StartOptions): Promise<{ url: string; token: string }> {
 	if (S.session && S.server) {
@@ -966,6 +1014,7 @@ export async function start(opts: StartOptions): Promise<{ url: string; token: s
 	S.crashCount = 0;
 	S.isResumedSession = false;
 	S.intentionalStop = false;
+	S.allowEdits = opts.allowEdits ?? false;
 	S.eventHistory = [];
 	S.readyFired = false;
 	S.onReady = opts.onReady ?? null;
@@ -1006,7 +1055,7 @@ export async function start(opts: StartOptions): Promise<{ url: string; token: s
 			if (errStr.includes("No API key") || errStr.includes("No model") || errStr.includes("Authentication")) {
 				broadcast({
 					type: "agent_exit",
-					error: `No API key configured.\n\nSet an API key:\n  deep-dive auth set anthropic sk-ant-xxx\n\nOr login with OAuth:\n  deep-dive auth login anthropic`,
+					error: `No API key configured.\n\nSet an API key:\n  codedive auth set anthropic sk-ant-xxx\n\nOr login with OAuth:\n  codedive auth login anthropic`,
 					crashCount: 0,
 					willRestart: false,
 					restartIn: null,
@@ -1022,7 +1071,7 @@ export async function start(opts: StartOptions): Promise<{ url: string; token: s
 		// Provide helpful auth error message
 		if (errStr.includes("No API key") || errStr.includes("No model") || errStr.includes("Authentication")) {
 			throw new Error(
-				`No API key configured.\n\n  Set an API key:\n    deep-dive auth set anthropic sk-ant-xxx\n\n  Or login with OAuth:\n    deep-dive auth login anthropic\n\n  Or set an environment variable:\n    export DEEP_DIVE_ANTHROPIC_API_KEY=sk-ant-xxx`,
+				`No API key configured.\n\n  Set an API key:\n    codedive auth set anthropic sk-ant-xxx\n\n  Or login with OAuth:\n    codedive auth login anthropic\n\n  Or set an environment variable:\n    export CODEDIVE_ANTHROPIC_API_KEY=sk-ant-xxx`,
 			);
 		}
 		throw err;
@@ -1056,6 +1105,7 @@ export async function resume(opts: ResumeOptions): Promise<{ url: string; token:
 	S.crashCount = 0;
 	S.isResumedSession = true;
 	S.intentionalStop = false;
+	S.allowEdits = opts.allowEdits ?? false;
 	S.eventHistory = [];
 	S.readyFired = false;
 	S.onReady = opts.onReady ?? null;
@@ -1090,6 +1140,71 @@ export async function resume(opts: ResumeOptions): Promise<{ url: string; token:
 	const url = `http://localhost:${port}/`;
 	return { url, token: S.secret };
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Chat history extraction from agent session
+// ═══════════════════════════════════════════════════════════════════════
+
+interface ChatMessage {
+	role: "user" | "assistant";
+	text: string;
+}
+
+/**
+ * Extract user/assistant text messages from the agent session.
+ * Skips the initial exploration prompt (first user message) and tool results.
+ * Returns messages in chronological order.
+ *
+ * @param limit - Maximum number of messages to return (from the end)
+ * @param messagesOverride - For testing: pass messages directly instead of reading from session
+ */
+export function extractChatMessages(limit?: number, messagesOverride?: readonly Record<string, unknown>[]): ChatMessage[] {
+	const messages = messagesOverride ?? (S.session ? S.session.messages : null);
+	if (!messages) return [];
+	const result: ChatMessage[] = [];
+	let skippedFirst = false;
+
+	for (const msg of messages) {
+		if (msg.role === "user") {
+			// Skip the first user message (the exploration prompt)
+			if (!skippedFirst) {
+				skippedFirst = true;
+				continue;
+			}
+			const content = (msg as any).content;
+			if (!Array.isArray(content)) continue;
+			const textParts = content
+				.filter((c: any) => c.type === "text")
+				.map((c: any) => c.text);
+			let text = textParts.join("\n").trim();
+			// Strip the markdown formatting instruction suffix we append in chat()
+			const instrIdx = text.lastIndexOf("\n\n[Respond in well-structured markdown.");
+			if (instrIdx > 0) text = text.substring(0, instrIdx).trim();
+			if (text) result.push({ role: "user", text });
+		} else if (msg.role === "assistant") {
+			const content = (msg as any).content;
+			if (!Array.isArray(content)) continue;
+			const textParts = content
+				.filter((c: any) => c.type === "text")
+				.map((c: any) => c.text);
+			const text = textParts.join("\n").trim();
+			// Skip assistant messages that are just tool calls or the initial doc generation
+			// Only include messages that have substantive text and follow a user chat message
+			if (text && result.length > 0 && result[result.length - 1].role === "user") {
+				result.push({ role: "assistant", text });
+			}
+		}
+	}
+
+	if (limit !== undefined) {
+		if (limit <= 0) return [];
+		if (result.length > limit) return result.slice(-limit);
+	}
+	return result;
+}
+
+/** Default number of recent chat messages sent on WebSocket connect */
+const RECENT_CHAT_LIMIT = 20;
 
 /**
  * Send a chat message from the user.
@@ -1282,6 +1397,7 @@ export function getState() {
 		model: S.model,
 		provider: S.provider,
 		isSubscription: S.isSubscription,
+		allowEdits: S.allowEdits,
 		depth: S.depth,
 		focus: S.focus,
 		scope: S.scope,

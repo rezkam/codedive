@@ -44,7 +44,7 @@ async function waitForCondition(fn: () => boolean, timeoutMs = 2000): Promise<vo
 
 function makeTempDir(): string {
 	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `deep-dive-engine-${id}`);
+	const dir = path.join(os.tmpdir(), `codedive-engine-${id}`);
 	fs.mkdirSync(dir, { recursive: true });
 	return dir;
 }
@@ -66,8 +66,10 @@ function createMockSession() {
 			// Don't do anything — tests will fire events manually
 		},
 		abort: async () => { aborted = true; },
-		get messages() { return []; },
-		get state() { return { messages: [] }; },
+		_messages: [] as any[],
+		get messages() { return this._messages; },
+		get state() { return { messages: this._messages }; },
+		setModel: async () => {},
 		// Simulate firing an event (for tests)
 		_emit: (event: AgentSessionEvent) => {
 			for (const fn of subscribers) fn(event);
@@ -1115,7 +1117,7 @@ describe("Engine lifecycle (real server)", () => {
 			handleEvent({ type: "agent_start" } as any);
 
 			// Create the .md file on disk so the detection logic finds it
-			const mdPath = path.join(tempDir, ".deep-dive", "sessions", "test", "doc.md");
+			const mdPath = path.join(tempDir, ".codedive", "sessions", "test", "doc.md");
 			fs.mkdirSync(path.dirname(mdPath), { recursive: true });
 			fs.writeFileSync(mdPath, "# Test\n\nSome content");
 
@@ -1312,6 +1314,255 @@ describe("Engine lifecycle (real server)", () => {
 
 			expect(getState().running).toBe(false);
 			ws.close();
+		});
+	});
+
+	// ─── Chat history recovery ───────────────────────────────────────
+
+	describe("chat history recovery on WebSocket reconnect", () => {
+		/** Helper to create mock agent messages */
+		function userMsg(text: string) {
+			return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+		}
+		function assistantTextMsg(text: string) {
+			return {
+				role: "assistant",
+				content: [{ type: "text", text }],
+				usage: { input: 100, output: 50 },
+				timestamp: Date.now(),
+			};
+		}
+		function assistantToolCallMsg() {
+			return {
+				role: "assistant",
+				content: [{ type: "toolCall", name: "read", id: "tc1", arguments: { path: "/foo" } }],
+				usage: { input: 50, output: 10 },
+				timestamp: Date.now(),
+			};
+		}
+		function toolResultMsg() {
+			return {
+				role: "toolResult",
+				toolCallId: "tc1",
+				toolName: "read",
+				content: [{ type: "text", text: "contents" }],
+				timestamp: Date.now(),
+			};
+		}
+
+		it("sends chat_history on WebSocket connect when session has chat messages", async () => {
+			const session = await startEngine();
+
+			// Simulate: initial exploration prompt + tool calls + doc, then a chat Q&A
+			const suffix = "\n\n[Respond in well-structured markdown. Use headings (##), bullet lists, fenced code blocks with language tags (```ts), tables, bold/italic for emphasis. Keep responses clear and organized.]";
+			session._messages.push(
+				userMsg("Explore the codebase in depth..."),
+				assistantToolCallMsg(),
+				toolResultMsg(),
+				assistantTextMsg("Document has been written."),
+				userMsg("How does auth work?" + suffix),
+				assistantTextMsg("## Authentication\n\nAuth uses JWT tokens."),
+			);
+
+			// Connect a WebSocket client
+			const ws = await connectWs(port, token);
+
+			// Wait for the chat_history message
+			const chatHistory = await ws.waitForMessage((m) => m.type === "chat_history", 2000);
+
+			expect(chatHistory.messages).toHaveLength(2);
+			expect(chatHistory.messages[0]).toEqual({ role: "user", text: "How does auth work?" });
+			expect(chatHistory.messages[1]).toEqual({ role: "assistant", text: "## Authentication\n\nAuth uses JWT tokens." });
+			expect(chatHistory.isFullHistory).toBe(false); // only sent RECENT_CHAT_LIMIT
+
+			ws.close();
+		});
+
+		it("does not send chat_history when no chat messages exist", async () => {
+			const session = await startEngine();
+
+			// Only the initial exploration — no follow-up chat
+			session._messages.push(
+				userMsg("Explore the codebase..."),
+				assistantToolCallMsg(),
+				toolResultMsg(),
+				assistantTextMsg("Document written."),
+			);
+
+			const ws = await connectWs(port, token);
+
+			// Wait for init message
+			await ws.waitForMessage((m) => m.type === "init", 2000);
+			// Give it a moment — chat_history should NOT arrive
+			await new Promise((r) => setTimeout(r, 200));
+
+			const chatHistoryMsgs = ws.messages.filter((m) => m.type === "chat_history");
+			expect(chatHistoryMsgs).toHaveLength(0);
+
+			ws.close();
+		});
+
+		it("reconnecting client gets chat history", async () => {
+			const session = await startEngine();
+			const suffix = "\n\n[Respond in well-structured markdown. Use headings (##), bullet lists, fenced code blocks with language tags (```ts), tables, bold/italic for emphasis. Keep responses clear and organized.]";
+
+			// First client connects (before any chat)
+			const ws1 = await connectWs(port, token);
+			await ws1.waitForMessage((m) => m.type === "init", 2000);
+
+			// Simulate a chat exchange happening
+			session._messages.push(
+				userMsg("Explore..."),
+				assistantTextMsg("Done."),
+				userMsg("What is X?" + suffix),
+				assistantTextMsg("X is a module."),
+			);
+
+			// First client disconnects
+			ws1.close();
+			await new Promise((r) => setTimeout(r, 100));
+
+			// Second client connects — should get chat history
+			const ws2 = await connectWs(port, token);
+			const chatHistory = await ws2.waitForMessage((m) => m.type === "chat_history", 2000);
+
+			expect(chatHistory.messages).toHaveLength(2);
+			expect(chatHistory.messages[0]).toEqual({ role: "user", text: "What is X?" });
+			expect(chatHistory.messages[1]).toEqual({ role: "assistant", text: "X is a module." });
+
+			ws2.close();
+		});
+
+		it("load_history request returns full chat history", async () => {
+			const session = await startEngine();
+			const suffix = "\n\n[Respond in well-structured markdown. Use headings (##), bullet lists, fenced code blocks with language tags (```ts), tables, bold/italic for emphasis. Keep responses clear and organized.]";
+
+			// Create many chat exchanges (more than RECENT_CHAT_LIMIT = 20)
+			session._messages.push(userMsg("Explore..."));
+			session._messages.push(assistantTextMsg("Done."));
+			for (let i = 0; i < 15; i++) {
+				session._messages.push(userMsg(`Question ${i}` + suffix));
+				session._messages.push(assistantTextMsg(`Answer ${i}`));
+			}
+
+			const ws = await connectWs(port, token);
+
+			// Get the initial chat_history (limited to RECENT_CHAT_LIMIT=20)
+			const initial = await ws.waitForMessage((m) => m.type === "chat_history", 2000);
+			expect(initial.messages.length).toBeLessThanOrEqual(20);
+			expect(initial.isFullHistory).toBe(false);
+
+			// Clear received messages to isolate the next response
+			ws.messages.length = 0;
+
+			// Request full history
+			ws.send({ type: "load_history" });
+
+			const full = await ws.waitForMessage((m) => m.type === "chat_history" && m.isFullHistory === true, 3000);
+			expect(full.messages).toHaveLength(30); // 15 Q + 15 A
+			expect(full.messages[0]).toEqual({ role: "user", text: "Question 0" });
+			expect(full.messages[29]).toEqual({ role: "assistant", text: "Answer 14" });
+
+			ws.close();
+		});
+
+		it("multiple concurrent clients each get chat history independently", async () => {
+			const session = await startEngine();
+			const suffix = "\n\n[Respond in well-structured markdown. Use headings (##), bullet lists, fenced code blocks with language tags (```ts), tables, bold/italic for emphasis. Keep responses clear and organized.]";
+
+			session._messages.push(
+				userMsg("Explore..."),
+				assistantTextMsg("Done."),
+				userMsg("Q1" + suffix),
+				assistantTextMsg("A1"),
+			);
+
+			// Connect two clients simultaneously
+			const [ws1, ws2] = await Promise.all([
+				connectWs(port, token),
+				connectWs(port, token),
+			]);
+
+			const history1 = await ws1.waitForMessage((m) => m.type === "chat_history", 2000);
+			const history2 = await ws2.waitForMessage((m) => m.type === "chat_history", 2000);
+
+			expect(history1.messages).toEqual(history2.messages);
+			expect(history1.messages).toHaveLength(2);
+
+			ws1.close();
+			ws2.close();
+		});
+
+		it("chat history is preserved across agent turns", async () => {
+			const session = await startEngine();
+			const suffix = "\n\n[Respond in well-structured markdown. Use headings (##), bullet lists, fenced code blocks with language tags (```ts), tables, bold/italic for emphasis. Keep responses clear and organized.]";
+
+			// Simulate exploration turn
+			session._messages.push(userMsg("Explore..."));
+			handleEvent({ type: "agent_start" } as any);
+			handleEvent({ type: "agent_end" } as any);
+
+			// Add doc response and chat
+			session._messages.push(
+				assistantTextMsg("Document generated."),
+				userMsg("How does auth work?" + suffix),
+			);
+
+			// Simulate agent turn for chat response
+			handleEvent({ type: "agent_start" } as any);
+			session._messages.push(assistantTextMsg("Auth uses OAuth2."));
+			handleEvent({ type: "agent_end" } as any);
+
+			// Connect a fresh client — should see chat history
+			const ws = await connectWs(port, token);
+			const chatHistory = await ws.waitForMessage((m) => m.type === "chat_history", 2000);
+
+			expect(chatHistory.messages).toHaveLength(2);
+			expect(chatHistory.messages[0].text).toBe("How does auth work?");
+			expect(chatHistory.messages[1].text).toBe("Auth uses OAuth2.");
+
+			ws.close();
+		});
+	});
+
+	// ─── Read-only mode ──────────────────────────────────────────────
+
+	describe("read-only mode (allowEdits)", () => {
+		it("defaults to read-only (allowEdits=false)", async () => {
+			await startEngine();
+			const state = getState();
+			expect(state.allowEdits).toBe(false);
+		});
+
+		it("allowEdits=true is exposed in state", async () => {
+			const { factory } = mockSessionFactory();
+			const result = await start({
+				cwd: tempDir,
+				depth: "medium",
+				model: "test-model",
+				sessionFactory: factory,
+				skipPrompt: true,
+				allowEdits: true,
+			});
+			port = parseInt(new URL(result.url).port);
+			token = result.token;
+
+			const state = getState();
+			expect(state.allowEdits).toBe(true);
+		});
+
+		it("allowEdits=false is the default even when not specified", async () => {
+			const { factory } = mockSessionFactory();
+			const result = await start({
+				cwd: tempDir,
+				sessionFactory: factory,
+				skipPrompt: true,
+				// allowEdits not specified
+			});
+			port = parseInt(new URL(result.url).port);
+			token = result.token;
+
+			expect(getState().allowEdits).toBe(false);
 		});
 	});
 });

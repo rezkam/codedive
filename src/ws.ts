@@ -1,5 +1,5 @@
 /**
- * Deep Dive — WebSocket helpers (RFC 6455).
+ * CodeDive — WebSocket helpers (RFC 6455).
  */
 
 import * as crypto from "node:crypto";

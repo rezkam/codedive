@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Deep Dive</title>
+<title>CodeDive</title>
 <!-- Pinned Tailwind CDN version — dev tool served by embedded HTTP server, not a production site -->
 <script src="https://cdn.tailwindcss.com/3.4.17"></script>
 <script>
@@ -130,7 +130,7 @@ tailwind.config = {
 
 <!-- ═══ Top bar ═══ -->
 <div class="h-11 bg-slate-900 border-b border-slate-800 flex items-center px-4 gap-3 shrink-0">
-  <div class="font-heading font-bold text-[15px] shrink-0">🔍 <span class="text-emerald-400">Deep Dive</span></div>
+  <div class="font-heading font-bold text-[15px] shrink-0">🔍 <span class="text-emerald-400">CodeDive</span></div>
 
   <!-- Status line -->
   <div id="statusLine" class="flex items-center gap-2.5 ml-3 text-[11px] font-mono text-slate-500 overflow-hidden whitespace-nowrap min-w-0">
@@ -248,7 +248,7 @@ tailwind.config = {
 <div id="authScreen" class="fixed inset-0 z-[300] bg-slate-950 flex items-center justify-center">
   <div class="w-full max-w-sm mx-4">
     <div class="text-center mb-8">
-      <div class="font-heading font-bold text-2xl mb-2">🔍 <span class="text-emerald-400">Deep Dive</span></div>
+      <div class="font-heading font-bold text-2xl mb-2">🔍 <span class="text-emerald-400">CodeDive</span></div>
       <p class="text-slate-500 text-sm">Enter the session token from your terminal</p>
     </div>
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
@@ -261,7 +261,7 @@ tailwind.config = {
         Connect
       </button>
     </div>
-    <p class="text-center text-slate-600 text-xs mt-4 font-mono">Token is shown when you run deep-dive</p>
+    <p class="text-center text-slate-600 text-xs mt-4 font-mono">Token is shown when you run codedive</p>
   </div>
 </div>
 
@@ -282,7 +282,9 @@ let selectionContext = null;
 let chatCollapsed = false;
 let unreadWhileCollapsed = false;
 let docReady = false;
-let sessionPrompt = ''; // exploration topic from deep-dive prompt
+let sessionPrompt = ''; // exploration topic from codedive prompt
+let hasFullHistory = true; // whether all chat messages are loaded
+let loadingFullHistory = false; // prevent duplicate requests
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -430,7 +432,7 @@ function connect() {
       setAgentBusy(false); hideWorking();
       finishStream(); finishThinking(); finishAllRunning(); cleanOrphanedStreaming();
       setSessionState('disconnected');
-      addSystemMsg('⚡ Server disconnected — will auto-reconnect when it\'s back. Run deep-dive resume in your terminal.');
+      addSystemMsg('⚡ Server disconnected — will auto-reconnect when it\'s back. Run codedive resume in your terminal.');
       // Auto-reconnect loop — try every 5s, token might change on new server
       startReconnect();
       return;
@@ -539,11 +541,11 @@ function setSessionState(state) {
 
 function onSessionPillClick() {
   if (sessionState === 'live' || sessionState === 'crashed' || sessionState === 'restarting' || sessionState === 'unresponsive') {
-    if (confirm('End this deep-dive session?')) stopEverything();
+    if (confirm('End this codedive session?')) stopEverything();
   }
   if (sessionState === 'disconnected') {
     stopReconnect();
-    showAuth('Enter the new token from deep-dive resume');
+    showAuth('Enter the new token from codedive resume');
   }
 }
 function disableChat() { document.querySelector('.input-bar')?.classList.add('disabled'); }
@@ -819,14 +821,37 @@ function handleEvent(data) {
   if (data.type === 'chat_history') {
     const msgs = data.messages || [];
     if (msgs.length > 0) {
+      // Compare with what we already have rendered (from eventHistory replay or sessionStorage)
+      const existingPairs = chatLog.filter(e => e.t === 'u' || e.t === 'a');
+      const newTexts = msgs.map(m => m.text);
+      const existingTexts = existingPairs.map(e => e.x);
+
+      // If the server has messages we don't have, or content differs, re-render from server truth
+      const serverFingerprint = newTexts.join('\x00');
+      const localFingerprint = existingTexts.join('\x00');
+      if (serverFingerprint === localFingerprint) {
+        // Already in sync — just update full-history flag
+        hasFullHistory = !!data.isFullHistory;
+        loadingFullHistory = false;
+        return;
+      }
+
+      // Server has different/more messages — clear chat bubbles and re-render
+      const tl = document.getElementById('timeline');
+      tl.querySelectorAll('.msg-md, .msg-user').forEach(el => {
+        const parent = el.closest('.shrink-0');
+        if (parent) parent.remove(); else el.remove();
+      });
+      // Also remove system messages about chat (thinking blocks, tool calls stay via eventHistory)
+      chatLog.length = 0;
       clearEmpty();
       restoring = true;
       for (const m of msgs) addBubble(m.role, m.text);
       restoring = false;
-      // Save restored history so it survives page refresh
       for (const m of msgs) pushChatLog(m.role === 'user' ? 'u' : 'a', m.text);
-      addSystemMsg('💬 Chat history restored');
-      scrollTL();
+      hasFullHistory = !!data.isFullHistory;
+      loadingFullHistory = false;
+      scrollTl();
     }
     return;
   }
@@ -840,7 +865,7 @@ function handleEvent(data) {
       addSystemMsg(`💥 Agent crashed (exit code ${data.code ?? '?'})${data.error ? ': ' + data.error : ''} — restarting in ${secs}s…`);
     } else if (data.crashCount > 0) {
       setSessionState('ended');
-      addSystemMsg(`💥 Agent crashed (exit code ${data.code ?? '?'})${data.error ? ': ' + data.error : ''} — restart limit reached. Run deep-dive resume to try again.`);
+      addSystemMsg(`💥 Agent crashed (exit code ${data.code ?? '?'})${data.error ? ': ' + data.error : ''} — restart limit reached. Run codedive resume to try again.`);
       showDocEnded();
     } else {
       setSessionState('ended');
@@ -1251,7 +1276,7 @@ function showDocEnded() {
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (doc) {
       doc.open();
-      doc.write('<!DOCTYPE html><html><head><style>body{background:#0c0c0f;color:#5a5a72;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}div{text-align:center}h2{color:#94a3b8;margin-bottom:8px}p{color:#475569;font-size:14px}</style></head><body><div><h2>Session ended</h2><p>No document was generated.<br>Run deep-dive to start a new session.</p></div></body></html>');
+      doc.write('<!DOCTYPE html><html><head><style>body{background:#0c0c0f;color:#5a5a72;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}div{text-align:center}h2{color:#94a3b8;margin-bottom:8px}p{color:#475569;font-size:14px}</style></head><body><div><h2>Session ended</h2><p>No document was generated.<br>Run codedive to start a new session.</p></div></body></html>');
       doc.close();
     }
   } catch {}
@@ -1391,6 +1416,19 @@ function restoreChatLog() {
     return true;
   } catch { restoring = false; return false; }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Scroll-to-top: load full chat history
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('timeline').addEventListener('scroll', function() {
+  if (hasFullHistory || loadingFullHistory || !ws || !connected) return;
+  if (this.scrollTop < 80) {
+    loadingFullHistory = true;
+    ws.send(JSON.stringify({ type: 'load_history' }));
+    // Reset after timeout in case server doesn't respond
+    setTimeout(() => { loadingFullHistory = false; }, 5000);
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // Chat text selection → "Ask about this"

@@ -13,7 +13,7 @@ const CLI_PATH = path.resolve(__dirname, "../../dist/cli.js");
  */
 function makeTempDir(): string {
 	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `deep-dive-test-${id}`);
+	const dir = path.join(os.tmpdir(), `codedive-test-${id}`);
 	fs.mkdirSync(dir, { recursive: true });
 	return dir;
 }
@@ -23,7 +23,7 @@ function makeTempDir(): string {
  *
  * Only PATH and NODE (needed to run node) are inherited from the real env.
  * All API keys, tokens, and HOME are explicitly excluded so tests never
- * touch the real ~/.deep-dive/ or accidentally use real credentials.
+ * touch the real ~/.codedive/ or accidentally use real credentials.
  */
 function cleanEnv(tempHome: string, overrides: Record<string, string> = {}): Record<string, string> {
 	return {
@@ -43,15 +43,15 @@ function cleanEnv(tempHome: string, overrides: Record<string, string> = {}): Rec
 		COPILOT_GITHUB_TOKEN: "",
 		GH_TOKEN: "",
 		GITHUB_TOKEN: "",
-		DEEP_DIVE_ANTHROPIC_API_KEY: "",
-		DEEP_DIVE_OPENAI_API_KEY: "",
-		DEEP_DIVE_GEMINI_API_KEY: "",
-		DEEP_DIVE_GROQ_API_KEY: "",
-		DEEP_DIVE_XAI_API_KEY: "",
-		DEEP_DIVE_OPENROUTER_API_KEY: "",
-		DEEP_DIVE_MISTRAL_API_KEY: "",
-		DEEP_DIVE_CEREBRAS_API_KEY: "",
-		DEEP_DIVE_GITHUB_TOKEN: "",
+		CODEDIVE_ANTHROPIC_API_KEY: "",
+		CODEDIVE_OPENAI_API_KEY: "",
+		CODEDIVE_GEMINI_API_KEY: "",
+		CODEDIVE_GROQ_API_KEY: "",
+		CODEDIVE_XAI_API_KEY: "",
+		CODEDIVE_OPENROUTER_API_KEY: "",
+		CODEDIVE_MISTRAL_API_KEY: "",
+		CODEDIVE_CEREBRAS_API_KEY: "",
+		CODEDIVE_GITHUB_TOKEN: "",
 		// Caller overrides last — they win
 		...overrides,
 	};
@@ -87,9 +87,9 @@ describe("CLI Authentication", () => {
 
 	beforeEach(() => {
 		tempHome = makeTempDir();
-		const deepDiveDir = path.join(tempHome, ".deep-dive");
-		authFile = path.join(deepDiveDir, "auth.json");
-		fs.mkdirSync(deepDiveDir, { recursive: true });
+		const codeDiveDir = path.join(tempHome, ".codedive");
+		authFile = path.join(codeDiveDir, "auth.json");
+		fs.mkdirSync(codeDiveDir, { recursive: true });
 		fs.writeFileSync(authFile, "{}", { mode: 0o600 });
 	});
 
@@ -179,10 +179,10 @@ describe("CLI Authentication", () => {
 			expect(result.stdout).toContain("auth login");
 		});
 
-		it("accepts DEEP_DIVE_ env var", () => {
+		it("accepts CODEDIVE_ env var", () => {
 			const result = runCLI(["--help"], {
 				tempHome,
-				env: { DEEP_DIVE_ANTHROPIC_API_KEY: "sk-test" },
+				env: { CODEDIVE_ANTHROPIC_API_KEY: "sk-test" },
 			});
 
 			expect(result.exitCode).toBe(0);
@@ -228,7 +228,7 @@ describe("CLI Authentication", () => {
 
 	describe("isolation safety", () => {
 		it("never writes to real home directory", () => {
-			const realAuthFile = path.join(os.homedir(), ".deep-dive", "auth.json");
+			const realAuthFile = path.join(os.homedir(), ".codedive", "auth.json");
 			const before = fs.existsSync(realAuthFile)
 				? fs.readFileSync(realAuthFile, "utf-8")
 				: null;
@@ -254,7 +254,7 @@ describe("CLI Authentication", () => {
 			runCLI(["auth", "set", "openai", "sk-temp"], { tempHome: isolatedTemp });
 
 			// Verify it was written
-			const authPath = path.join(isolatedTemp, ".deep-dive", "auth.json");
+			const authPath = path.join(isolatedTemp, ".codedive", "auth.json");
 			expect(fs.existsSync(authPath)).toBe(true);
 
 			// Clean up

@@ -1,5 +1,5 @@
 /**
- * Deep Dive — Markdown → HTML renderer.
+ * CodeDive — Markdown → HTML renderer.
  *
  * Pipeline: .md → marked (with custom mermaid renderer) → template → .html
  */
@@ -96,7 +96,7 @@ ${clean}
 
 	// Extract title from first h1
 	const titleMatch = md.match(/^#\s+(.+)$/m);
-	const title = titleMatch ? titleMatch[1].trim() : "Deep Dive";
+	const title = titleMatch ? titleMatch[1].trim() : "CodeDive";
 
 	const body = await marked.parse(md, { renderer });
 	const template = getTemplate();

@@ -1,8 +1,8 @@
 /**
- * Terminal spinner with fun deep-dive themed animations.
+ * Terminal spinner with fun codedive themed animations.
  */
 
-const DEEP_DIVE_FRAMES = [
+const CODEDIVE_FRAMES = [
 	"🤿      Diving into the codebase...",
 	" 🤿     Diving into the codebase...",
 	"  🤿    Diving into the codebase...",
@@ -61,10 +61,10 @@ interface SpinnerPhase {
 }
 
 const PHASES: SpinnerPhase[] = [
-	{ frames: DEEP_DIVE_FRAMES, label: "Starting server", interval: 100 },
+	{ frames: CODEDIVE_FRAMES, label: "Starting server", interval: 100 },
 	{ frames: FISH_FRAMES, label: "Creating agent session", interval: 120 },
 	{ frames: SONAR_FRAMES, label: "Connecting to AI model", interval: 150 },
-	{ frames: DEEP_DIVE_FRAMES, label: "Starting exploration", interval: 100 },
+	{ frames: CODEDIVE_FRAMES, label: "Starting exploration", interval: 100 },
 ];
 
 export class Spinner {

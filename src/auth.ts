@@ -1,28 +1,28 @@
 /**
- * Deep Dive — Authentication management.
+ * CodeDive — Authentication management.
  *
- * Wraps AuthStorage from pi-coding-agent but uses ~/.deep-dive/auth.json
- * and adds DEEP_DIVE_ env var support.
+ * Wraps AuthStorage from pi-coding-agent but uses ~/.codedive/auth.json
+ * and adds CODEDIVE_ env var support.
  */
 
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { AUTH_PATH, ENV_VAR_MAP } from "./constants.js";
 
 /**
- * Create an AuthStorage instance pointing to ~/.deep-dive/auth.json.
- * Also registers a fallback resolver for DEEP_DIVE_ env vars.
+ * Create an AuthStorage instance pointing to ~/.codedive/auth.json.
+ * Also registers a fallback resolver for CODEDIVE_ env vars.
  */
 export function createAuthStorage(): AuthStorage {
 	const authStorage = new AuthStorage(AUTH_PATH);
 
-	// Register fallback resolver for DEEP_DIVE_ prefixed env vars
+	// Register fallback resolver for CODEDIVE_ prefixed env vars
 	authStorage.setFallbackResolver((provider: string) => {
 		const mapping = ENV_VAR_MAP[provider];
 		if (!mapping) return undefined;
 
-		// Check DEEP_DIVE_ prefixed var first
-		const deepDiveVal = process.env[mapping.deepDive];
-		if (deepDiveVal) return deepDiveVal;
+		// Check CODEDIVE_ prefixed var first
+		const codeDiveVal = process.env[mapping.codeDive];
+		if (codeDiveVal) return codeDiveVal;
 
 		// Then check standard env vars
 		for (const fallback of mapping.fallbacks) {

@@ -1,9 +1,9 @@
 /**
- * Deep Dive — Programmatic API.
+ * CodeDive — Programmatic API.
  *
  * @example
  * ```typescript
- * import { start, stop, getState } from "deep-dive";
+ * import { start, stop, getState } from "codedive";
  *
  * const { url, token } = await start({
  *   cwd: "/path/to/project",

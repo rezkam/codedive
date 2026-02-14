@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Deep Dive CLI - Production-grade TypeScript CLI application.
+ * CodeDive CLI - Production-grade TypeScript CLI application.
  *
  * Architecture:
  * - commander: Command parsing and routing
@@ -82,6 +82,7 @@ program
 	)
 	.option("--path <dir>", "Subdirectory to focus on (repeatable)", (val, prev: string[]) => [...prev, val], [])
 	.option("--model <name>", "LLM model to use", "claude-sonnet-4-5")
+	.option("--dangerously-allow-edits", "Allow the agent to edit files (disabled by default for safety)")
 	.argument("[prompt...]", "Optional topic or question to focus exploration")
 	.addHelpText(
 		"after",
@@ -99,6 +100,7 @@ Enable tab completion:
 				depth: options.depth as "shallow" | "medium" | "deep",
 				paths: options.path,
 				model: options.model,
+				allowEdits: !!options.dangerouslyAllowEdits,
 				cwd: process.cwd(),
 			});
 		} catch (error) {
@@ -110,9 +112,10 @@ Enable tab completion:
 program
 	.command("resume")
 	.description("Resume a previous session")
-	.action(async () => {
+	.option("--dangerously-allow-edits", "Allow the agent to edit files (disabled by default for safety)")
+	.action(async (options) => {
 		try {
-			await commandHandler.handleResume(process.cwd());
+			await commandHandler.handleResume(process.cwd(), { allowEdits: !!options.dangerouslyAllowEdits });
 		} catch (error) {
 			handleError(error);
 		}
