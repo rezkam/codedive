@@ -1,5 +1,5 @@
 /**
- * Deep Dive — Mermaid diagram validation.
+ * CodeDive — Mermaid diagram validation.
  *
  * Extracts mermaid blocks from HTML, validates each with mermaid-cli,
  * and returns errors for the agent to fix.

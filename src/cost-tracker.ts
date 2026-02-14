@@ -1,5 +1,5 @@
 /**
- * Deep Dive — Token usage and cost tracking.
+ * CodeDive — Token usage and cost tracking.
  *
  * Consumes pi-ai's Usage type:
  *   { input, output, cacheRead, cacheWrite, totalTokens, cost: { input, output, cacheRead, cacheWrite, total } }

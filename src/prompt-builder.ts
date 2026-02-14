@@ -1,5 +1,5 @@
 /**
- * Deep Dive — Exploration prompt builder.
+ * CodeDive — Exploration prompt builder.
  *
  * Generates the initial system/user prompt for the agent to explore
  * a codebase and write a markdown architecture document.

@@ -1,5 +1,5 @@
 /**
- * Deep Dive — constants and shared configuration.
+ * CodeDive — constants and shared configuration.
  */
 
 import { homedir } from "node:os";
@@ -8,16 +8,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // ── Branding ──────────────────────────────────────────────────────────
-export const APP_NAME = "Deep Dive";
-export const APP_CMD = "deep-dive";
+export const APP_NAME = "CodeDive";
+export const APP_CMD = "codedive";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 export const APP_VERSION: string = pkg.version;
 
 // ── Directories ───────────────────────────────────────────────────────
-/** Global config: ~/.deep-dive/ */
-export const GLOBAL_DIR = join(homedir(), ".deep-dive");
+/** Global config: ~/.codedive/ */
+export const GLOBAL_DIR = join(homedir(), ".codedive");
 /** Global auth file */
 export const AUTH_PATH = join(GLOBAL_DIR, "auth.json");
 /** Global settings file */
@@ -28,7 +28,7 @@ export const GLOBAL_SKILLS_DIR = join(GLOBAL_DIR, "skills");
 export const GLOBAL_SESSIONS_DIR = join(GLOBAL_DIR, "sessions");
 
 /** Project-local directory name */
-export const LOCAL_DIR_NAME = ".deep-dive";
+export const LOCAL_DIR_NAME = ".codedive";
 
 // ── Mermaid ───────────────────────────────────────────────────────────
 export const MERMAID_CLI_VERSION = "11.4.2";
@@ -47,44 +47,44 @@ export const HEARTBEAT_INTERVAL = 15_000;
 
 // ── Environment Variables ─────────────────────────────────────────────
 /**
- * Deep Dive environment variables (DEEP_DIVE_ prefix) with fallbacks
+ * CodeDive environment variables (CODEDIVE_ prefix) with fallbacks
  * to standard provider env vars.
  */
-export const ENV_VAR_MAP: Record<string, { deepDive: string; fallbacks: string[] }> = {
+export const ENV_VAR_MAP: Record<string, { codeDive: string; fallbacks: string[] }> = {
 	anthropic: {
-		deepDive: "DEEP_DIVE_ANTHROPIC_API_KEY",
+		codeDive: "CODEDIVE_ANTHROPIC_API_KEY",
 		fallbacks: ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
 	},
 	openai: {
-		deepDive: "DEEP_DIVE_OPENAI_API_KEY",
+		codeDive: "CODEDIVE_OPENAI_API_KEY",
 		fallbacks: ["OPENAI_API_KEY"],
 	},
 	google: {
-		deepDive: "DEEP_DIVE_GEMINI_API_KEY",
+		codeDive: "CODEDIVE_GEMINI_API_KEY",
 		fallbacks: ["GEMINI_API_KEY"],
 	},
 	groq: {
-		deepDive: "DEEP_DIVE_GROQ_API_KEY",
+		codeDive: "CODEDIVE_GROQ_API_KEY",
 		fallbacks: ["GROQ_API_KEY"],
 	},
 	xai: {
-		deepDive: "DEEP_DIVE_XAI_API_KEY",
+		codeDive: "CODEDIVE_XAI_API_KEY",
 		fallbacks: ["XAI_API_KEY"],
 	},
 	openrouter: {
-		deepDive: "DEEP_DIVE_OPENROUTER_API_KEY",
+		codeDive: "CODEDIVE_OPENROUTER_API_KEY",
 		fallbacks: ["OPENROUTER_API_KEY"],
 	},
 	mistral: {
-		deepDive: "DEEP_DIVE_MISTRAL_API_KEY",
+		codeDive: "CODEDIVE_MISTRAL_API_KEY",
 		fallbacks: ["MISTRAL_API_KEY"],
 	},
 	cerebras: {
-		deepDive: "DEEP_DIVE_CEREBRAS_API_KEY",
+		codeDive: "CODEDIVE_CEREBRAS_API_KEY",
 		fallbacks: ["CEREBRAS_API_KEY"],
 	},
 	"github-copilot": {
-		deepDive: "DEEP_DIVE_GITHUB_TOKEN",
+		codeDive: "CODEDIVE_GITHUB_TOKEN",
 		fallbacks: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
 	},
 };

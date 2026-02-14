@@ -1,5 +1,5 @@
 {
-  "name": "deep-dive",
+  "name": "codedive",
   "version": "0.1.0",
   "type": "module",
   "description": "Explore any codebase — generate rich architecture docs with diagrams, then chat with an AI that already read the code",
@@ -7,10 +7,10 @@
   "author": "Reza Kamali",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rezkam/deep-dive"
+    "url": "https://github.com/rezkam/codedive"
   },
   "bin": {
-    "deep-dive": "./dist/cli.js"
+    "codedive": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,7 +21,7 @@
     "mermaid",
     "ai",
     "agent",
-    "deep-dive"
+    "codedive"
   ],
   "exports": {
     ".": {
@@ -46,6 +46,7 @@
     "test:integration": "vitest --run tests/integration",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
+    "test:browser": "npx playwright test",
     "test:coverage": "vitest --coverage",
     "prepublishOnly": "npm run build && npm test",
     "release:patch": "node scripts/release.mjs patch",
@@ -64,8 +65,10 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/node": "^25.2.3",
     "@vitest/ui": "^4.0.18",
+    "playwright": "^1.58.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

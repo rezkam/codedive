@@ -37,23 +37,23 @@ jobs:
         run: npm pack
 
       - name: Install globally from tarball
-        run: npm install -g deep-dive-*.tgz
+        run: npm install -g codedive-*.tgz
 
       - name: Verify installation
         run: |
-          which deep-dive
-          deep-dive --version
-          deep-dive --help
+          which codedive
+          codedive --version
+          codedive --help
 
       - name: Test auth commands
         run: |
-          deep-dive auth --help
-          deep-dive auth set anthropic test-key
-          deep-dive auth list
-          deep-dive auth logout anthropic
+          codedive auth --help
+          codedive auth set anthropic test-key
+          codedive auth list
+          codedive auth logout anthropic
 
       - name: Cleanup
-        run: npm uninstall -g deep-dive
+        run: npm uninstall -g codedive
 
   e2e-cli:
     name: Test CLI Commands

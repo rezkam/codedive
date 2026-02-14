@@ -22,7 +22,7 @@ const CLI_PATH = path.resolve(__dirname, "../../dist/cli.js");
 
 function makeTempDir(): string {
 	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `deep-dive-opts-${id}`);
+	const dir = path.join(os.tmpdir(), `codedive-opts-${id}`);
 	fs.mkdirSync(dir, { recursive: true });
 	return dir;
 }
@@ -34,7 +34,7 @@ function cleanEnv(tempHome: string, overrides: Record<string, string> = {}): Rec
 		NODE_ENV: "test",
 		ANTHROPIC_API_KEY: "",
 		OPENAI_API_KEY: "",
-		DEEP_DIVE_ANTHROPIC_API_KEY: "",
+		CODEDIVE_ANTHROPIC_API_KEY: "",
 		...overrides,
 	};
 }
@@ -63,7 +63,7 @@ describe("CLI options and commands", () => {
 
 	beforeEach(() => {
 		tempHome = makeTempDir();
-		const ddDir = path.join(tempHome, ".deep-dive");
+		const ddDir = path.join(tempHome, ".codedive");
 		fs.mkdirSync(ddDir, { recursive: true });
 		fs.writeFileSync(path.join(ddDir, "auth.json"), "{}", { mode: 0o600 });
 	});
@@ -181,6 +181,39 @@ describe("CLI options and commands", () => {
 	});
 
 	// ═══════════════════════════════════════════════════════════════
+	// --dangerously-allow-edits option
+	// ═══════════════════════════════════════════════════════════════
+
+	describe("--dangerously-allow-edits", () => {
+		it("is listed in --help output", () => {
+			const r = run(["--help"], { tempHome });
+			expect(r.exitCode).toBe(0);
+			expect(r.stdout).toContain("--dangerously-allow-edits");
+		});
+
+		it("is accepted on the main command", () => {
+			// It will fail due to no auth, but should NOT fail due to unknown option
+			const r = run(["--dangerously-allow-edits"], { tempHome });
+			// exit code 1 = auth error (expected), not option parse error
+			expect(r.stderr).not.toContain("unknown option");
+			expect(r.stderr).not.toContain("error: unknown option");
+		});
+
+		it("is accepted on the resume command", () => {
+			const r = run(["resume", "--dangerously-allow-edits"], { tempHome });
+			// No sessions / no auth is fine — should not be "unknown option"
+			expect(r.stderr).not.toContain("unknown option");
+			expect(r.stderr).not.toContain("error: unknown option");
+		});
+
+		it("resume --help shows the flag", () => {
+			const r = run(["resume", "--help"], { tempHome });
+			expect(r.exitCode).toBe(0);
+			expect(r.stdout).toContain("--dangerously-allow-edits");
+		});
+	});
+
+	// ═══════════════════════════════════════════════════════════════
 	// Auth commands
 	// ═══════════════════════════════════════════════════════════════
 
@@ -289,21 +322,21 @@ describe("CLI options and commands", () => {
 		it("generates bash completion", () => {
 			const r = run(["completion", "bash"], { tempHome });
 			expect(r.exitCode).toBe(0);
-			expect(r.stdout).toContain("_deep_dive_completions");
+			expect(r.stdout).toContain("_codedive_completions");
 			expect(r.stdout).toContain("complete -o default -F");
 		});
 
 		it("generates zsh completion", () => {
 			const r = run(["completion", "zsh"], { tempHome });
 			expect(r.exitCode).toBe(0);
-			expect(r.stdout).toContain("#compdef deep-dive");
-			expect(r.stdout).toContain("_deep_dive");
+			expect(r.stdout).toContain("#compdef codedive");
+			expect(r.stdout).toContain("_codedive");
 		});
 
 		it("generates fish completion", () => {
 			const r = run(["completion", "fish"], { tempHome });
 			expect(r.exitCode).toBe(0);
-			expect(r.stdout).toContain("complete -c deep-dive");
+			expect(r.stdout).toContain("complete -c codedive");
 		});
 
 		it("rejects unknown shell", () => {
@@ -526,7 +559,7 @@ describe("Completion script correctness", () => {
 
 		it("--completion-data sessions lists sessions when they exist", () => {
 			// Create a session in the temp home
-			const sessionDir = path.join(tempHome, ".deep-dive", "abc123");
+			const sessionDir = path.join(tempHome, ".codedive", "abc123");
 			fs.mkdirSync(sessionDir, { recursive: true });
 			fs.writeFileSync(
 				path.join(sessionDir, "meta.json"),
@@ -546,7 +579,7 @@ describe("Completion script correctness", () => {
 		});
 
 		it("--completion-data sessions-zsh includes session description", () => {
-			const sessionDir = path.join(tempHome, ".deep-dive", "def456");
+			const sessionDir = path.join(tempHome, ".codedive", "def456");
 			fs.mkdirSync(sessionDir, { recursive: true });
 			fs.writeFileSync(
 				path.join(sessionDir, "meta.json"),
@@ -621,7 +654,7 @@ describe("Completion script correctness", () => {
 
 describe("Test isolation safety", () => {
 	const realHome = os.homedir();
-	const realAuthPath = path.join(realHome, ".deep-dive", "auth.json");
+	const realAuthPath = path.join(realHome, ".codedive", "auth.json");
 	let authBefore: string | null;
 
 	beforeEach(() => {
@@ -630,7 +663,7 @@ describe("Test isolation safety", () => {
 		} catch { authBefore = null; }
 	});
 
-	it("tests never write to real ~/.deep-dive/auth.json", () => {
+	it("tests never write to real ~/.codedive/auth.json", () => {
 		try {
 			const authAfter = fs.existsSync(realAuthPath) ? fs.readFileSync(realAuthPath, "utf-8") : null;
 			expect(authAfter).toBe(authBefore);
@@ -652,7 +685,7 @@ describe("Test isolation safety", () => {
 		});
 
 		// Verify it wrote to temp, not real home
-		const tempAuth = path.join(tempDir, ".deep-dive", "auth.json");
+		const tempAuth = path.join(tempDir, ".codedive", "auth.json");
 		if (fs.existsSync(tempAuth)) {
 			const contents = fs.readFileSync(tempAuth, "utf-8");
 			expect(contents).toContain("test-isolation-key");

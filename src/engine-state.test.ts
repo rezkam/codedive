@@ -1,5 +1,5 @@
 /**
- * Comprehensive state machine tests for the Deep Dive engine.
+ * Comprehensive state machine tests for the CodeDive engine.
  *
  * Tests every state combination of:
  *   - Engine lifecycle: idle → starting → streaming → waiting → stopped/failed
@@ -600,7 +600,7 @@ describe("EngineStateMachine", () => {
 		});
 
 		it("full exploration lifecycle", () => {
-			// Simulates a complete deep-dive session:
+			// Simulates a complete codedive session:
 			// 1. Start server + agent
 			// 2. Agent explores codebase (streaming)
 			// 3. Agent writes document

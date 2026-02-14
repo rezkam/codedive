@@ -20,7 +20,7 @@ describe("checkAuth", () => {
 		// Wipe all keys that checkAuth looks for so tests start clean
 		for (const key of Object.keys(process.env)) {
 			if (
-				key.startsWith("DEEP_DIVE_") ||
+				key.startsWith("CODEDIVE_") ||
 				key === "ANTHROPIC_API_KEY" ||
 				key === "ANTHROPIC_OAUTH_TOKEN" ||
 				key === "OPENAI_API_KEY" ||
@@ -80,8 +80,8 @@ describe("checkAuth", () => {
 	});
 
 	describe("environment variables", () => {
-		it("detects DEEP_DIVE_ prefixed vars", () => {
-			process.env.DEEP_DIVE_ANTHROPIC_API_KEY = "sk-ant-test";
+		it("detects CODEDIVE_ prefixed vars", () => {
+			process.env.CODEDIVE_ANTHROPIC_API_KEY = "sk-ant-test";
 
 			const result = checkAuth(mockStorage);
 
@@ -100,8 +100,8 @@ describe("checkAuth", () => {
 			expect(result.source).toBe("env");
 		});
 
-		it("prefers DEEP_DIVE_ prefix over standard vars", () => {
-			process.env.DEEP_DIVE_ANTHROPIC_API_KEY = "sk-deep-dive";
+		it("prefers CODEDIVE_ prefix over standard vars", () => {
+			process.env.CODEDIVE_ANTHROPIC_API_KEY = "sk-codedive";
 			process.env.ANTHROPIC_API_KEY = "sk-standard";
 
 			const result = checkAuth(mockStorage);
