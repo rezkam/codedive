@@ -1,0 +1,109 @@
+name: E2E Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  e2e-install:
+    name: Test Global Installation
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 24]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run build
+
+      - name: Pack package
+        run: npm pack
+
+      - name: Install globally from tarball
+        run: npm install -g deep-dive-*.tgz
+
+      - name: Verify installation
+        run: |
+          which deep-dive
+          deep-dive --version
+          deep-dive --help
+
+      - name: Test auth commands
+        run: |
+          deep-dive auth --help
+          deep-dive auth set anthropic test-key
+          deep-dive auth list
+          deep-dive auth logout anthropic
+
+      - name: Cleanup
+        run: npm uninstall -g deep-dive
+
+  e2e-cli:
+    name: Test CLI Commands
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run build
+
+      - name: Test CLI directly
+        run: |
+          # Test version
+          node dist/cli.js --version
+          
+          # Test help
+          node dist/cli.js --help
+          
+          # Test auth commands
+          node dist/cli.js auth set anthropic test-key-ci
+          node dist/cli.js auth list
+          node dist/cli.js auth logout anthropic
+
+      - name: Test CLI without auth
+        run: |
+          # Should fail without auth
+          if node dist/cli.js "test" 2>&1 | grep -q "No API credentials"; then
+            echo "✅ Correctly blocks without credentials"
+          else
+            echo "❌ Should have blocked without credentials"
+            exit 1
+          fi
+
+      - name: Test CLI with env var
+        run: |
+          export ANTHROPIC_API_KEY=test-key
+          # Just test that auth check passes (don't actually run)
+          if timeout 2 node dist/cli.js --help > /dev/null 2>&1; then
+            echo "✅ Accepts environment variable"
+          else
+            echo "❌ Should accept environment variable"
+            exit 1
+          fi

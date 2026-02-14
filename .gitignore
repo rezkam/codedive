@@ -1,5 +1,5 @@
 node_modules/
 dist/
-.pi/
+.deep-dive/
 *.log
-package-lock.json
+# package-lock.json is committed — pinned dependencies for reproducible builds

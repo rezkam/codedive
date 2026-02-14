@@ -37,6 +37,15 @@ tailwind.config = {
     animation: shimmer 2s ease-in-out infinite;
   }
 
+  /* Status line — subtle flash when values change */
+  .stat-flash {
+    transition: color 0.6s ease-out;
+    color: #94a3b8 !important; /* briefly brighten to slate-400 */
+  }
+  #statusLine span {
+    transition: color 0.6s ease-out;
+  }
+
   /* Chat sidebar — collapse width smoothly */
   #panelChat { transition: width .3s cubic-bezier(.4,0,.2,1), min-width .3s cubic-bezier(.4,0,.2,1), border-color .3s; overflow: hidden; }
   .chat-closed #panelChat { width: 0 !important; min-width: 0 !important; border-color: transparent; }
@@ -121,9 +130,27 @@ tailwind.config = {
 
 <!-- ═══ Top bar ═══ -->
 <div class="h-11 bg-slate-900 border-b border-slate-800 flex items-center px-4 gap-3 shrink-0">
-  <div class="font-heading font-bold text-[15px]">π <span class="text-emerald-400">Deep Dive</span></div>
+  <div class="font-heading font-bold text-[15px] shrink-0">🔍 <span class="text-emerald-400">Deep Dive</span></div>
+
+  <!-- Status line -->
+  <div id="statusLine" class="flex items-center gap-2.5 ml-3 text-[11px] font-mono text-slate-500 overflow-hidden whitespace-nowrap min-w-0">
+    <span id="statIn" class="shrink-0 cursor-default"></span>
+    <span id="statOut" class="shrink-0 cursor-default"></span>
+    <span id="statCacheR" class="shrink-0 text-slate-600 cursor-default"></span>
+    <span id="statCacheW" class="shrink-0 text-slate-600 cursor-default"></span>
+    <span id="statCost" class="shrink-0 cursor-default"></span>
+    <span id="statSub" class="shrink-0 text-amber-500/70 text-[10px] hidden cursor-default" title="You're on a subscription plan — this cost is an estimate of what API calls would cost, not what you're being charged">(sub)</span>
+    <span class="shrink-0 text-slate-700">·</span>
+    <span id="statProvider" class="shrink-0 text-slate-600 cursor-default"></span>
+    <!-- Model selector -->
+    <button id="modelBtn" onclick="toggleModelPicker()" class="shrink-0 text-slate-400 hover:text-emerald-400 transition-colors cursor-pointer flex items-center gap-1" title="Click to change model">
+      <span id="statModel"></span>
+      <svg viewBox="0 0 12 12" class="w-2.5 h-2.5 opacity-50"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+
   <div class="flex-1"></div>
-  <div class="flex gap-2 items-center">
+  <div class="flex gap-2 items-center shrink-0">
     <button onclick="refreshDoc()" class="px-2.5 py-1 text-[11px] font-sans bg-slate-800 border border-slate-700 rounded-md text-slate-400 hover:text-emerald-400 hover:border-emerald-400/40 transition-all">↻ Doc</button>
     <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-slate-800 border border-slate-700 rounded-md text-slate-400" id="sessionPill">
       <span class="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0 transition-all" id="pillDot"></span>
@@ -140,6 +167,12 @@ tailwind.config = {
       <span class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-slate-900 hidden" id="toggleBadge"></span>
     </button>
   </div>
+</div>
+
+<!-- ═══ Model picker dropdown ═══ -->
+<div id="modelPicker" class="hidden absolute z-50 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl shadow-black/50 max-h-80 overflow-y-auto min-w-[280px]" style="top: 40px; left: 200px;">
+  <div class="px-3 py-2 border-b border-slate-800 text-[11px] text-slate-500 font-sans">Available models</div>
+  <div id="modelList" class="py-1"></div>
 </div>
 
 <!-- ═══ Panels ═══ -->
@@ -215,7 +248,7 @@ tailwind.config = {
 <div id="authScreen" class="fixed inset-0 z-[300] bg-slate-950 flex items-center justify-center">
   <div class="w-full max-w-sm mx-4">
     <div class="text-center mb-8">
-      <div class="font-heading font-bold text-2xl mb-2">π <span class="text-emerald-400">Deep Dive</span></div>
+      <div class="font-heading font-bold text-2xl mb-2">🔍 <span class="text-emerald-400">Deep Dive</span></div>
       <p class="text-slate-500 text-sm">Enter the session token from your terminal</p>
     </div>
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
@@ -228,7 +261,7 @@ tailwind.config = {
         Connect
       </button>
     </div>
-    <p class="text-center text-slate-600 text-xs mt-4 font-mono">Token is shown when you run /deep-dive</p>
+    <p class="text-center text-slate-600 text-xs mt-4 font-mono">Token is shown when you run deep-dive</p>
   </div>
 </div>
 
@@ -249,7 +282,7 @@ let selectionContext = null;
 let chatCollapsed = false;
 let unreadWhileCollapsed = false;
 let docReady = false;
-let sessionPrompt = ''; // exploration topic from /deep-dive prompt
+let sessionPrompt = ''; // exploration topic from deep-dive prompt
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -397,7 +430,7 @@ function connect() {
       setAgentBusy(false); hideWorking();
       finishStream(); finishThinking(); finishAllRunning(); cleanOrphanedStreaming();
       setSessionState('disconnected');
-      addSystemMsg('⚡ Server disconnected — will auto-reconnect when it\'s back. Run /deep-dive-resume in your terminal.');
+      addSystemMsg('⚡ Server disconnected — will auto-reconnect when it\'s back. Run deep-dive resume in your terminal.');
       // Auto-reconnect loop — try every 5s, token might change on new server
       startReconnect();
       return;
@@ -510,11 +543,188 @@ function onSessionPillClick() {
   }
   if (sessionState === 'disconnected') {
     stopReconnect();
-    showAuth('Enter the new token from /deep-dive-resume');
+    showAuth('Enter the new token from deep-dive resume');
   }
 }
 function disableChat() { document.querySelector('.input-bar')?.classList.add('disabled'); }
 function enableChat() { document.querySelector('.input-bar')?.classList.remove('disabled'); }
+
+// ═══════════════════════════════════════════════════════════════
+// Status line — tokens, cost, model
+// ═══════════════════════════════════════════════════════════════
+let _currentModel = '', _currentProvider = '', _isSubscription = false;
+let _prevValues = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+function fmtCost(c) {
+  if (c === 0) return '$0';
+  if (c < 0.01) return '$' + c.toFixed(4);
+  if (c < 1) return '$' + c.toFixed(3);
+  return '$' + c.toFixed(2);
+}
+function fmtTokensFull(n) {
+  return n.toLocaleString() + ' tokens';
+}
+
+/** Briefly flash an element brighter when its value changes */
+function flashEl(el) {
+  el.classList.add('stat-flash');
+  // Force reflow so the transition restarts if already flashing
+  void el.offsetWidth;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      el.classList.remove('stat-flash');
+    });
+  });
+}
+
+function updateStatusLine(session, latest, model, provider, isSub) {
+  if (!session) return;
+  const s = session;
+
+  const elIn = document.getElementById('statIn');
+  const elOut = document.getElementById('statOut');
+  const elCacheR = document.getElementById('statCacheR');
+  const elCacheW = document.getElementById('statCacheW');
+  const elCost = document.getElementById('statCost');
+  const elSub = document.getElementById('statSub');
+  const elProvider = document.getElementById('statProvider');
+  const elModel = document.getElementById('statModel');
+
+  // Input tokens
+  const newIn = '↑' + fmtTokens(s.input);
+  if (elIn.textContent !== newIn) { elIn.textContent = newIn; if (_prevValues.input > 0) flashEl(elIn); }
+  elIn.title = 'Tokens sent to the model: ' + fmtTokensFull(s.input)
+    + (latest ? '\nThis turn: ' + fmtTokensFull(latest.input) : '');
+
+  // Output tokens
+  const newOut = '↓' + fmtTokens(s.output);
+  if (elOut.textContent !== newOut) { elOut.textContent = newOut; if (_prevValues.output > 0) flashEl(elOut); }
+  elOut.title = 'Tokens generated by the model: ' + fmtTokensFull(s.output)
+    + (latest ? '\nThis turn: ' + fmtTokensFull(latest.output) : '');
+
+  // Cache read
+  if (s.cacheRead > 0) {
+    const newCR = 'R' + fmtTokens(s.cacheRead);
+    if (elCacheR.textContent !== newCR) { elCacheR.textContent = newCR; if (_prevValues.cacheRead > 0) flashEl(elCacheR); }
+    elCacheR.title = 'Tokens read from cache (cheaper than new input): ' + fmtTokensFull(s.cacheRead);
+    elCacheR.classList.remove('hidden');
+  } else {
+    elCacheR.classList.add('hidden');
+  }
+
+  // Cache write
+  if (s.cacheWrite > 0) {
+    const newCW = 'W' + fmtTokens(s.cacheWrite);
+    if (elCacheW.textContent !== newCW) { elCacheW.textContent = newCW; if (_prevValues.cacheWrite > 0) flashEl(elCacheW); }
+    elCacheW.title = 'Tokens written to cache (for future reuse): ' + fmtTokensFull(s.cacheWrite);
+    elCacheW.classList.remove('hidden');
+  } else {
+    elCacheW.classList.add('hidden');
+  }
+
+  // Cost
+  const newCost = fmtCost(s.cost);
+  if (elCost.textContent !== newCost) { elCost.textContent = newCost; if (_prevValues.cost > 0) flashEl(elCost); }
+  const costBase = 'Estimated API cost for this session: ' + fmtCost(s.cost);
+  if (isSub) {
+    elCost.title = costBase + '\n\nYou\'re on a subscription — this is an estimate of\nwhat these API calls would cost at pay-per-use rates.\nYou are not being charged this amount.';
+    elCost.classList.add('text-amber-500/70');
+    elSub.classList.remove('hidden');
+  } else {
+    elCost.title = costBase + (latest ? '\nThis turn: ' + fmtCost(latest.cost) : '');
+    elCost.classList.remove('text-amber-500/70');
+    elSub.classList.add('hidden');
+  }
+
+  // Provider
+  if (provider) {
+    elProvider.textContent = '(' + provider + ')';
+    elProvider.title = 'Provider: ' + provider + (isSub ? ' (subscription)' : ' (API key)');
+  }
+
+  // Model
+  if (model) {
+    _currentModel = model; _currentProvider = provider || _currentProvider;
+    _isSubscription = !!isSub;
+    elModel.textContent = model;
+    elModel.title = 'Current model: ' + model + '\nClick to switch models';
+  }
+
+  // Track previous values for flash detection
+  _prevValues = { input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, cost: s.cost };
+}
+
+// ── Model picker ──────────────────────────────────────────────
+let _modelPickerOpen = false;
+
+function toggleModelPicker() {
+  const picker = document.getElementById('modelPicker');
+  if (_modelPickerOpen) { picker.classList.add('hidden'); _modelPickerOpen = false; return; }
+  // Position it below the model button
+  const btn = document.getElementById('modelBtn');
+  const rect = btn.getBoundingClientRect();
+  picker.style.top = rect.bottom + 4 + 'px';
+  picker.style.left = Math.max(8, rect.left - 100) + 'px';
+  // Fetch available models
+  fetch('/models?token=' + encodeURIComponent(getToken()))
+    .then(r => r.json())
+    .then(data => {
+      const list = document.getElementById('modelList');
+      list.innerHTML = '';
+      if (!data.models || data.models.length === 0) {
+        list.innerHTML = '<div class="px-3 py-2 text-[11px] text-slate-500">No models available</div>';
+      } else {
+        // Group by provider
+        const groups = {};
+        for (const m of data.models) {
+          if (!groups[m.provider]) groups[m.provider] = [];
+          groups[m.provider].push(m);
+        }
+        for (const [prov, models] of Object.entries(groups)) {
+          const header = document.createElement('div');
+          header.className = 'px-3 py-1.5 text-[10px] text-slate-600 uppercase tracking-wider font-sans';
+          header.textContent = prov + (models[0]?.isOAuth ? ' (subscription)' : '');
+          list.appendChild(header);
+          for (const m of models) {
+            const btn = document.createElement('button');
+            btn.className = 'w-full text-left px-3 py-1.5 text-[12px] font-mono flex items-center gap-2 transition-colors '
+              + (m.active
+                ? 'text-emerald-400 bg-emerald-400/5'
+                : 'text-slate-300 hover:bg-slate-800 hover:text-emerald-400');
+            btn.innerHTML = (m.active ? '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>' : '<span class="w-1.5 h-1.5 shrink-0"></span>')
+              + '<span>' + m.id + '</span>'
+              + (m.reasoning ? '<span class="text-[9px] text-violet-400/60 ml-auto">reasoning</span>' : '');
+            btn.title = m.name + ' (' + m.provider + ')' + (m.isOAuth ? ' — subscription' : '');
+            if (!m.active) {
+              btn.onclick = () => {
+                if (ws && ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: 'change_model', modelId: m.id, provider: m.provider }));
+                }
+                toggleModelPicker();
+              };
+            }
+            list.appendChild(btn);
+          }
+        }
+      }
+      picker.classList.remove('hidden');
+      _modelPickerOpen = true;
+    })
+    .catch(() => {});
+}
+
+// Close model picker on outside click
+document.addEventListener('click', (e) => {
+  if (_modelPickerOpen && !e.target.closest('#modelPicker') && !e.target.closest('#modelBtn')) {
+    document.getElementById('modelPicker').classList.add('hidden');
+    _modelPickerOpen = false;
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // Event handling
@@ -523,6 +733,18 @@ function handleEvent(data) {
   if (data.type === 'init') {
     if (data.htmlPath) { docReady = true; refreshDoc(); clearEmpty(); }
     if (data.prompt) sessionPrompt = data.prompt;
+    // Initialize status line from init payload
+    if (data.model) {
+      _currentModel = data.model; _currentProvider = data.provider || '';
+      _isSubscription = !!data.isSubscription;
+      document.getElementById('statModel').textContent = data.model;
+      document.getElementById('statProvider').textContent = data.provider ? '(' + data.provider + ')' : '';
+      document.getElementById('statProvider').title = data.provider ? 'Provider: ' + data.provider : '';
+      document.getElementById('statSub').classList.toggle('hidden', !data.isSubscription);
+    }
+    if (data.usage) {
+      updateStatusLine(data.usage, null, data.model, data.provider, data.isSubscription);
+    }
     if (data.agentRunning) {
       setSessionState('live');
       if (data.isStreaming) {
@@ -576,6 +798,10 @@ function handleEvent(data) {
     if (data.agentRunning && data.healthy && sessionState === 'unresponsive') {
       setSessionState('live');
     }
+    // Refresh status line from heartbeat
+    if (data.usage) {
+      updateStatusLine(data.usage, null, data.model, data.provider, data.isSubscription);
+    }
     return;
   }
   if (data.type === 'agent_health') {
@@ -614,7 +840,7 @@ function handleEvent(data) {
       addSystemMsg(`💥 Agent crashed (exit code ${data.code ?? '?'})${data.error ? ': ' + data.error : ''} — restarting in ${secs}s…`);
     } else if (data.crashCount > 0) {
       setSessionState('ended');
-      addSystemMsg(`💥 Agent crashed (exit code ${data.code ?? '?'})${data.error ? ': ' + data.error : ''} — restart limit reached. Run /deep-dive-resume to try again.`);
+      addSystemMsg(`💥 Agent crashed (exit code ${data.code ?? '?'})${data.error ? ': ' + data.error : ''} — restart limit reached. Run deep-dive resume to try again.`);
       showDocEnded();
     } else {
       setSessionState('ended');
@@ -645,6 +871,29 @@ function handleEvent(data) {
   if (data.type === 'validation_fix_request') { showWorking(`Fixing diagrams (attempt ${data.attempt}/${data.maxAttempts})…`, 2); addSystemMsg(`🔧 Fix attempt ${data.attempt}/${data.maxAttempts}`); return; }
   if (data.type === 'validation_gave_up') { addSystemMsg('⚠️ Could not fix all diagrams'); hideWorking(); return; }
   if (data.type === 'doc_validated') { addSystemMsg('✅ Document validated'); refreshDoc(); hideWorking(); return; }
+
+  // Status line updates (from cost_update, status_update, heartbeat)
+  if (data.type === 'cost_update') {
+    updateStatusLine(data.session, data.latest, data.model, data.provider, data.isSubscription);
+    return;
+  }
+  if (data.type === 'status_update') {
+    updateStatusLine(data.usage, null, data.model, data.provider, data.isSubscription);
+    return;
+  }
+  if (data.type === 'model_changed') {
+    _currentModel = data.model; _currentProvider = data.provider; _isSubscription = data.isSubscription;
+    document.getElementById('statModel').textContent = data.model;
+    document.getElementById('statProvider').textContent = '(' + data.provider + ')';
+    document.getElementById('statProvider').title = 'Provider: ' + data.provider;
+    document.getElementById('statSub').classList.toggle('hidden', !data.isSubscription);
+    addSystemMsg('🔄 Model changed to ' + data.model + ' (' + data.provider + ')');
+    return;
+  }
+  if (data.type === 'model_change_error') {
+    addSystemMsg('⚠️ Failed to change model: ' + data.error);
+    return;
+  }
 
   if (data.type !== 'rpc_event') return;
   const evt = data.event, et = evt.type;
@@ -1002,7 +1251,7 @@ function showDocEnded() {
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (doc) {
       doc.open();
-      doc.write('<!DOCTYPE html><html><head><style>body{background:#0c0c0f;color:#5a5a72;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}div{text-align:center}h2{color:#94a3b8;margin-bottom:8px}p{color:#475569;font-size:14px}</style></head><body><div><h2>Session ended</h2><p>No document was generated.<br>Run /deep-dive to start a new session.</p></div></body></html>');
+      doc.write('<!DOCTYPE html><html><head><style>body{background:#0c0c0f;color:#5a5a72;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}div{text-align:center}h2{color:#94a3b8;margin-bottom:8px}p{color:#475569;font-size:14px}</style></head><body><div><h2>Session ended</h2><p>No document was generated.<br>Run deep-dive to start a new session.</p></div></body></html>');
       doc.close();
     }
   } catch {}

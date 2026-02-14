@@ -1,0 +1,89 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check TypeScript compilation
+        run: npx tsc --noEmit
+
+      - name: Check for TODOs in code
+        run: |
+          echo "Checking for TODO/FIXME comments..."
+          if grep -r "TODO\|FIXME" src/ --exclude-dir=node_modules; then
+            echo "⚠️  Found TODO/FIXME comments (informational only)"
+          else
+            echo "✅ No TODO/FIXME comments found"
+          fi
+        continue-on-error: true
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+
+      - name: Check for outdated dependencies
+        run: npm outdated || true
+        continue-on-error: true
+
+  size:
+    name: Package Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run build
+
+      - name: Check package size
+        run: |
+          npm pack --dry-run
+          SIZE=$(npm pack --dry-run 2>&1 | grep "package size:" | awk '{print $3}')
+          echo "📦 Package size: $SIZE"
+          
+          # Convert to KB for comparison (strip units)
+          SIZE_NUM=$(echo $SIZE | sed 's/[^0-9.]//g')
+          if (( $(echo "$SIZE_NUM > 100" | bc -l) )); then
+            echo "⚠️  Package is larger than 100 kB"
+          else
+            echo "✅ Package size is acceptable"
+          fi
