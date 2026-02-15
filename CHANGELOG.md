@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Read-only mode by default** — agent cannot modify, create, or delete files unless `--dangerously-allow-edits` is passed
 - **Safe bash** — 26 categories of destructive commands blocked (rm, mv, sed -i, git commit, npm install, redirects, etc.)
 - **Read-only badge** — `(read-only)` indicator in browser status bar with tooltip
+- **OAuth browser login** — `storyof auth login` prompts to press Enter, then opens login page in your default browser
 - **Browser tests** — 49 Playwright tests across 3 test files (chat history, read-only mode, full E2E journey)
 - **Real CLI E2E tests** — 25 tests that spawn the actual CLI binary, clone real repos, connect real browser (requires API key)
 - **CI matrix** — tests run on Node 22, 23, 24, 25 across Ubuntu and macOS
+- **Trusted publishing** — npm releases via GitHub Actions OIDC, no tokens needed
 
 ### Changed
 
