@@ -8,6 +8,7 @@ export default defineConfig({
 		expect: {
 			requireAssertions: true, // prevent zero-assertion tests from silently passing
 		},
+		setupFiles: ["./tests/setup/fail-on-console.ts"],
 		// Coverage applies across all projects
 		coverage: {
 			provider: "v8",
