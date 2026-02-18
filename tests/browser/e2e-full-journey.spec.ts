@@ -19,11 +19,14 @@
  * (HTTP server, WebSocket, DOM rendering, CSS) is real.
  */
 
-import { test, expect, type Page, type BrowserContext } from "@playwright/test";
+import { type BrowserContext } from "@playwright/test";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import {
+	test, expect, withEngine, type Page,
+} from "./fixtures/engine-fixture.js";
 import {
 	start,
 	reset,
@@ -32,7 +35,17 @@ import {
 	extractChatMessages,
 	type SessionFactory,
 } from "../../src/engine.js";
-import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import {
+	evAgentStart,
+	evAgentEnd,
+	evMessageStart,
+	evTextDelta,
+	evTextEnd,
+	evMessageEnd,
+	evToolStart,
+	evToolEnd,
+} from "../helpers/events.js";
 import { renderDocument } from "../../src/renderer.js";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -59,7 +72,7 @@ function createMockSession() {
 			aborted = true;
 		},
 		async setModel() {},
-		_messages: [] as any[],
+		_messages: [] as unknown[],
 		get messages() {
 			return this._messages;
 		},
@@ -130,62 +143,65 @@ function addToolResultMessage(session: MockSession, toolId: string, toolName: st
 }
 
 async function authenticate(page: Page, token: string) {
-	const authHidden = await page.evaluate(
-		() => document.getElementById("authScreen")?.classList.contains("hidden"),
-	);
-	if (!authHidden) {
-		await page.fill("#authInput", token);
-		await page.click("#authBtn");
+	const authScreen = page.getByTestId("auth-screen");
+	const isVisible = await authScreen.isVisible();
+	if (isVisible) {
+		await page.getByTestId("auth-input").fill(token);
+		await page.getByTestId("auth-submit").click();
 	}
-	await page.waitForFunction(
-		() => document.getElementById("authScreen")?.classList.contains("hidden"),
-		{ timeout: 5000 },
-	);
-	await page.waitForFunction(
-		() => {
-			const pill = document.getElementById("pillText");
-			return pill && pill.textContent !== "connecting…";
-		},
-		{ timeout: 5000 },
-	);
+	// Wait for auth screen to disappear (WebSocket connected)
+	await authScreen.waitFor({ state: "hidden", timeout: 5000 });
+	// Wait for pill text to confirm connection established
+	await page.locator("#pillText").filter({ hasNotText: "connecting…" }).waitFor({ timeout: 5000 });
 }
 
 async function getChatBubbles(page: Page): Promise<Array<{ role: string; text: string }>> {
-	return page.evaluate(() => {
-		const bubbles = document.querySelectorAll("#timeline .msg-md");
-		return Array.from(bubbles).map((b) => ({
-			role: b.classList.contains("ml-8") ? "user" : "assistant",
-			text: (b.textContent || "").trim(),
-		}));
-	});
+	const bubbles = page.locator("[data-testid='chat-message']");
+	const count = await bubbles.count();
+	const result: Array<{ role: string; text: string }> = [];
+	for (let i = 0; i < count; i++) {
+		const el = bubbles.nth(i);
+		const role = (await el.getAttribute("data-role")) ?? "unknown";
+		const text = ((await el.textContent()) ?? "").trim();
+		result.push({ role, text });
+	}
+	return result;
 }
 
 async function countBubbles(page: Page): Promise<number> {
-	return page.evaluate(() => document.querySelectorAll("#timeline .msg-md").length);
+	return page.locator("[data-testid='chat-message']").count();
 }
 
 async function waitForUserBubble(page: Page, text: string, timeout = 5000) {
-	await page.waitForFunction(
-		(t) => {
-			const bubbles = document.querySelectorAll(".msg-md");
-			return Array.from(bubbles).some(
-				(b) => b.classList.contains("ml-8") && b.textContent?.includes(t),
-			);
-		},
-		text,
-		{ timeout },
-	);
+	await page
+		.locator("[data-testid='chat-message'][data-role='user']")
+		.filter({ hasText: text })
+		.waitFor({ state: "visible", timeout });
 }
 
 async function waitForAssistantBubble(page: Page, text: string, timeout = 5000) {
-	await page.waitForFunction(
-		(t) => {
-			const bubbles = document.querySelectorAll(".msg-md:not(.ml-8):not(.streaming)");
-			return Array.from(bubbles).some((b) => b.textContent?.includes(t));
-		},
-		text,
-		{ timeout },
-	);
+	await page
+		.locator("[data-testid='chat-message'][data-role='assistant']:not(.streaming)")
+		.filter({ hasText: text })
+		.waitFor({ state: "visible", timeout });
+}
+
+/** Node.js-side polling — waits for a server-side condition to be true */
+async function waitFor(fn: () => boolean, timeoutMs = 5000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (fn()) return;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	throw new Error(`waitFor: condition not met after ${timeoutMs}ms`);
+}
+
+/** Wait for at least `min` chat bubbles to appear in the timeline */
+async function waitForBubbles(page: Page, min = 1, timeoutMs = 5000): Promise<void> {
+	await page
+		.locator("[data-testid='chat-message']")
+		.nth(min - 1)
+		.waitFor({ state: "visible", timeout: timeoutMs });
 }
 
 /** Simulate agent exploring: fires tool calls for reading files. */
@@ -197,7 +213,7 @@ function simulateExploration(session: MockSession) {
 		timestamp: Date.now(),
 	});
 
-	handleEvent({ type: "agent_start" } as any);
+	handleEvent(evAgentStart());
 
 	// Read some files
 	const tools = [
@@ -209,21 +225,10 @@ function simulateExploration(session: MockSession) {
 
 	for (const t of tools) {
 		addToolCallMessage(session, t.name, t.id, t.args);
-		handleEvent({
-			type: "tool_execution_start",
-			toolCallId: t.id,
-			toolName: t.name,
-			args: t.args,
-		} as any);
+		handleEvent(evToolStart(t.name, t.id, t.args));
 
 		addToolResultMessage(session, t.id, t.name, t.result);
-		handleEvent({
-			type: "tool_execution_end",
-			toolCallId: t.id,
-			toolName: t.name,
-			result: t.result,
-			isError: false,
-		} as any);
+		handleEvent(evToolEnd(t.name, t.id, t.result));
 	}
 }
 
@@ -266,26 +271,15 @@ graph TD
 
 	const toolId = "tc-write-1";
 	addToolCallMessage(session, "write", toolId, { path: mdPath });
-	handleEvent({
-		type: "tool_execution_start",
-		toolCallId: toolId,
-		toolName: "write",
-		args: { path: mdPath },
-	} as any);
+	handleEvent(evToolStart("write", toolId, { path: mdPath }));
 
 	addToolResultMessage(session, toolId, "write", `Wrote ${mdContent.length} bytes to ${mdPath}`);
-	handleEvent({
-		type: "tool_execution_end",
-		toolCallId: toolId,
-		toolName: "write",
-		result: `Wrote ${mdContent.length} bytes to ${mdPath}`,
-		isError: false,
-	} as any);
+	handleEvent(evToolEnd("write", toolId, `Wrote ${mdContent.length} bytes to ${mdPath}`));
 
 	// Add the assistant "done" message
 	addAssistantMessage(session, "I've analyzed the codebase and written the architecture document.");
 
-	handleEvent({ type: "agent_end" } as any);
+	handleEvent(evAgentEnd());
 
 	return mdPath;
 }
@@ -293,26 +287,16 @@ graph TD
 /** Simulate a streamed chat response. */
 function simulateChatResponse(session: MockSession, userText: string, responseText: string) {
 	addUserMessage(session, userText);
-	handleEvent({ type: "agent_start" } as any);
-	handleEvent({ type: "message_start", message: { role: "assistant" } } as any);
+	handleEvent(evAgentStart());
+	handleEvent(evMessageStart());
 	const chunks = responseText.match(/.{1,30}/g) || [responseText];
 	for (const chunk of chunks) {
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: chunk },
-		} as any);
+		handleEvent(evTextDelta(chunk));
 	}
-	handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_end" } } as any);
-	handleEvent({
-		type: "message_end",
-		message: {
-			role: "assistant",
-			content: [{ type: "text", text: responseText }],
-			usage: { input: 500, output: 200 },
-		},
-	} as any);
+	handleEvent(evTextEnd());
+	handleEvent(evMessageEnd(responseText));
 	addAssistantMessage(session, responseText);
-	handleEvent({ type: "agent_end" } as any);
+	handleEvent(evAgentEnd());
 }
 
 /** HTTP GET helper. */
@@ -325,58 +309,33 @@ async function httpGet(url: string): Promise<{ status: number; body: string }> {
 // E2E Journey 1: Full exploration → document → chat → reconnect
 // ═══════════════════════════════════════════════════════════════════════
 
-test.describe("full user journey: explore → document → chat → reconnect", () => {
-	let tempDir: string;
-	let port: number;
-	let token: string;
-	let session: MockSession;
+// serial: tests share engine state — each step builds on the previous
+test.describe.serial("full user journey: explore → document → chat → reconnect", () => {
+	// worker-scoped: all serial steps share the same engine instance
+	const { port, token, session, tempDir } = withEngine();
 
-	test.beforeAll(async () => {
-		tempDir = makeTempDir();
-		session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
-
-		const result = await start({
-			cwd: tempDir,
-			depth: "medium",
-			model: "claude-sonnet-4-5",
-			sessionFactory: factory,
-			skipPrompt: true,
-		});
-		port = parseInt(new URL(result.url).port);
-		token = result.token;
-	});
-
-	test.afterAll(async () => {
-		reset();
-		await new Promise((r) => setTimeout(r, 100));
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {}
-	});
-
-	test("1. browser connects and sees auth screen", async ({ page }) => {
+	test("browser connects and sees auth screen", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
-		await expect(page.locator("#authScreen")).toBeVisible();
-		await expect(page.locator("#authInput")).toBeVisible();
+		await expect(page.getByTestId("auth-screen")).toBeVisible();
+		await expect(page.getByTestId("auth-input")).toBeVisible();
 		await expect(page.locator("#authBtn")).toBeVisible();
 	});
 
-	test("2. auth screen rejects wrong token", async ({ page }) => {
+	test("auth screen rejects wrong token", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
-		await page.fill("#authInput", "wrong-token");
-		await page.click("#authBtn");
-		await page.waitForTimeout(1500);
-		await expect(page.locator("#authScreen")).not.toHaveClass(/hidden/);
+		await page.getByTestId("auth-input").fill( "wrong-token");
+		await page.getByTestId("auth-submit").click();
+		// Auth screen should stay visible (bad token rejected)
+		await expect(page.getByTestId("auth-screen")).not.toHaveClass(/hidden/, { timeout: 3000 });
 	});
 
-	test("3. correct token connects successfully", async ({ page }) => {
+	test("correct token connects successfully", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
 		await expect(page.locator("#pillDot")).toBeVisible();
 	});
 
-	test("4. status bar shows model and read-only badge", async ({ page }) => {
+	test("status bar shows model and read-only badge", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
 
@@ -388,7 +347,7 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		await expect(page.locator("#statReadOnly")).toHaveText("(read-only)");
 	});
 
-	test("5. agent exploration streams tool calls to the browser", async ({ page }) => {
+	test("agent exploration streams tool calls to the browser", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
 
@@ -396,28 +355,26 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		simulateExploration(session);
 
 		// Wait for tool events to arrive in the activity panel
-		await page.waitForTimeout(500);
+		await page.waitForFunction(
+			() => (document.getElementById("timeline")?.childElementCount ?? 0) > 0,
+			{ timeout: 5000 },
+		);
 
-		// The activity panel should show tool call entries
-		const activityHtml = await page.evaluate(() => {
-			const tl = document.getElementById("timeline");
-			return tl ? tl.innerHTML : "";
-		});
-
-		// Tool calls should appear in the activity panel
-		expect(activityHtml).toContain("find");
-		expect(activityHtml).toContain("read");
+		// Tool calls should appear in the timeline
+		const timeline = page.getByTestId("timeline");
+		await expect(timeline).toContainText("find");
+		await expect(timeline).toContainText("read");
 	});
 
-	test("6. document appears after agent writes markdown", async ({ page }) => {
+	test("document appears after agent writes markdown", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
 
 		// Simulate writing the document
 		const mdPath = simulateDocumentWrite(session, tempDir);
 
-		// Wait for render — the engine renders markdown to HTML asynchronously
-		await page.waitForTimeout(2000);
+		// Wait for async markdown render to complete
+		await waitFor(() => !!getState().htmlPath, 10_000);
 
 		// The doc iframe should have content now
 		const state = getState();
@@ -430,20 +387,16 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(doc.body).toContain("test-project");
 	});
 
-	test("7. user sends chat message and sees streamed response", async ({ page }) => {
+	test("user sends chat message and sees streamed response", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(300);
 
 		// Type and send a message
-		await page.fill("#input", "How does the routing work?");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "How does the routing work?");
+		await page.getByTestId("send-button").click();
 
 		// User bubble appears immediately (client-side)
 		await waitForUserBubble(page, "How does the routing work?");
-
-		// Wait for prompt to reach server
-		await page.waitForTimeout(300);
 
 		// Simulate agent response
 		simulateChatResponse(
@@ -464,20 +417,19 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(assistantBubble).toBeTruthy();
 	});
 
-	test("8. second chat exchange works", async ({ page }) => {
+	test("second chat exchange works", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 2);
 
 		// Previous chat should be restored
 		const preBubbles = await getChatBubbles(page);
 		expect(preBubbles.length).toBeGreaterThanOrEqual(2);
 
 		// Send another question
-		await page.fill("#input", "What testing framework is used?");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "What testing framework is used?");
+		await page.getByTestId("send-button").click();
 		await waitForUserBubble(page, "testing framework");
-		await page.waitForTimeout(300);
 
 		simulateChatResponse(
 			session,
@@ -497,11 +449,11 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(lastAssistant?.text).toContain("vitest");
 	});
 
-	test("9. disconnect and reconnect restores all chat history", async ({ page }) => {
+	test("disconnect and reconnect restores all chat history", async ({ page }) => {
 		// Connect, verify current state
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		const beforeBubbles = await getChatBubbles(page);
 		const beforeCount = beforeBubbles.length;
@@ -509,12 +461,12 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 
 		// Navigate away (full disconnect)
 		await page.goto("about:blank");
-		await page.waitForTimeout(300);
+		await page.waitForTimeout(100); // acceptable: wait for WS close
 
 		// Reconnect
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, beforeCount);
 
 		// All chat history should be restored
 		const afterBubbles = await getChatBubbles(page);
@@ -525,18 +477,17 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(afterBubbles.some((b) => b.text.includes("vitest"))).toBe(true);
 	});
 
-	test("10. chat works after reconnect", async ({ page }) => {
+	test("chat works after reconnect", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		const preCount = await countBubbles(page);
 
 		// Ask a new question
-		await page.fill("#input", "Explain the database layer");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "Explain the database layer");
+		await page.getByTestId("send-button").click();
 		await waitForUserBubble(page, "database layer");
-		await page.waitForTimeout(300);
 
 		simulateChatResponse(
 			session,
@@ -550,7 +501,7 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(postCount).toBe(preCount + 2);
 	});
 
-	test("11. /status endpoint returns correct state", async () => {
+	test("/status endpoint returns correct state", async () => {
 		const status = await httpGet(`http://localhost:${port}/status?token=${token}`);
 		expect(status.status).toBe(200);
 		const data = JSON.parse(status.body);
@@ -559,7 +510,7 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(data.targetPath).toBe(tempDir);
 	});
 
-	test("12. /state endpoint includes allowEdits", async () => {
+	test("/state endpoint includes allowEdits", async () => {
 		const state = await httpGet(`http://localhost:${port}/state?token=${token}`);
 		expect(state.status).toBe(200);
 		const data = JSON.parse(state.body);
@@ -568,12 +519,12 @@ test.describe("full user journey: explore → document → chat → reconnect", 
 		expect(data.model).toBe("claude-sonnet-4-5");
 	});
 
-	test("13. /status rejects invalid token", async () => {
+	test("/status rejects invalid token", async () => {
 		const status = await httpGet(`http://localhost:${port}/status?token=wrong`);
 		expect(status.status).toBe(403);
 	});
 
-	test("14. /doc rejects invalid token", async () => {
+	test("/doc rejects invalid token", async () => {
 		const doc = await httpGet(`http://localhost:${port}/doc?token=wrong`);
 		expect(doc.status).toBe(403);
 	});
@@ -597,7 +548,7 @@ test.describe("read-only vs edit mode", () => {
 	test("default mode shows read-only badge and correct state", async ({ page }) => {
 		tempDir = makeTempDir();
 		const session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
+		const factory: SessionFactory = async () => session as unknown as AgentSession;
 
 		const result = await start({
 			cwd: tempDir,
@@ -622,7 +573,7 @@ test.describe("read-only vs edit mode", () => {
 	test("edit mode hides read-only badge", async ({ page }) => {
 		tempDir = makeTempDir();
 		const session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
+		const factory: SessionFactory = async () => session as unknown as AgentSession;
 
 		const result = await start({
 			cwd: tempDir,
@@ -650,38 +601,15 @@ test.describe("read-only vs edit mode", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 test.describe("concurrent browser tabs", () => {
-	let tempDir: string;
-	let port: number;
-	let token: string;
-	let session: MockSession;
+	// worker-scoped engine; setup runs in a separate beforeAll after withEngine() registers
+	const ctx = withEngine();
 
 	test.beforeAll(async () => {
-		tempDir = makeTempDir();
-		session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
-
-		const result = await start({
-			cwd: tempDir,
-			sessionFactory: factory,
-			skipPrompt: true,
-		});
-		port = parseInt(new URL(result.url).port);
-		token = result.token;
-
-		// Set up exploration + one chat exchange
-		simulateExploration(session);
-		simulateDocumentWrite(session, tempDir);
-		await new Promise((r) => setTimeout(r, 500)); // let render happen
-
-		simulateChatResponse(session, "What is this project?", "It's an Express application for managing users.");
-	});
-
-	test.afterAll(async () => {
-		reset();
-		await new Promise((r) => setTimeout(r, 100));
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {}
+		// Additional state: simulate exploration + one chat exchange
+		simulateExploration(ctx.session);
+		simulateDocumentWrite(ctx.session, ctx.tempDir);
+		await waitFor(() => !!getState().htmlPath, 10_000);
+		simulateChatResponse(ctx.session, "What is this project?", "It's an Express application for managing users.");
 	});
 
 	test("two tabs see the same chat history", async ({ browser }) => {
@@ -690,12 +618,12 @@ test.describe("concurrent browser tabs", () => {
 		const page1 = await ctx1.newPage();
 		const page2 = await ctx2.newPage();
 
-		await page1.goto(`http://localhost:${port}/`);
-		await page2.goto(`http://localhost:${port}/`);
-		await authenticate(page1, token);
-		await authenticate(page2, token);
-		await page1.waitForTimeout(500);
-		await page2.waitForTimeout(500);
+		await page1.goto(`http://localhost:${ctx.port}/`);
+		await page2.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page1, ctx.token);
+		await authenticate(page2, ctx.token);
+		await waitForBubbles(page1, 1);
+		await waitForBubbles(page2, 1);
 
 		const bubbles1 = await getChatBubbles(page1);
 		const bubbles2 = await getChatBubbles(page2);
@@ -713,12 +641,12 @@ test.describe("concurrent browser tabs", () => {
 		const page1 = await ctx1.newPage();
 		const page2 = await ctx2.newPage();
 
-		await page1.goto(`http://localhost:${port}/`);
-		await page2.goto(`http://localhost:${port}/`);
-		await authenticate(page1, token);
-		await authenticate(page2, token);
-		await page1.waitForTimeout(500);
-		await page2.waitForTimeout(500);
+		await page1.goto(`http://localhost:${ctx.port}/`);
+		await page2.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page1, ctx.token);
+		await authenticate(page2, ctx.token);
+		await waitForBubbles(page1, 1);
+		await waitForBubbles(page2, 1);
 
 		const pre1 = await countBubbles(page1);
 		const pre2 = await countBubbles(page2);
@@ -727,10 +655,9 @@ test.describe("concurrent browser tabs", () => {
 		await page1.fill("#input", "Tell me about error handling");
 		await page1.click("#sendBtn");
 		await waitForUserBubble(page1, "error handling");
-		await page1.waitForTimeout(200);
 
 		// Agent responds — both tabs should get the stream
-		simulateChatResponse(session, "Tell me about error handling", "Errors are handled using try/catch with custom error classes.");
+		simulateChatResponse(ctx.session, "Tell me about error handling", "Errors are handled using try/catch with custom error classes.");
 
 		await waitForAssistantBubble(page1, "try/catch");
 		await waitForAssistantBubble(page2, "try/catch");
@@ -754,28 +681,14 @@ test.describe("concurrent browser tabs", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 test.describe("chat history pagination", () => {
-	let tempDir: string;
-	let port: number;
-	let token: string;
-	let session: MockSession;
+	// worker-scoped engine; messages seeded in a separate beforeAll
+	const { port, token, session } = withEngine();
 
-	test.beforeAll(async () => {
-		tempDir = makeTempDir();
-		session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
-
-		const result = await start({
-			cwd: tempDir,
-			sessionFactory: factory,
-			skipPrompt: true,
-		});
-		port = parseInt(new URL(result.url).port);
-		token = result.token;
-
+	test.beforeAll(() => {
 		// Set up initial exploration
 		simulateExploration(session);
 		addAssistantMessage(session, "Document written.");
-		handleEvent({ type: "agent_end" } as any);
+		handleEvent(evAgentEnd());
 
 		// Add 25 chat exchanges (50 messages) — well over the 20-message limit
 		for (let i = 0; i < 25; i++) {
@@ -784,18 +697,10 @@ test.describe("chat history pagination", () => {
 		}
 	});
 
-	test.afterAll(async () => {
-		reset();
-		await new Promise((r) => setTimeout(r, 100));
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {}
-	});
-
 	test("initial connect shows only recent 20 messages", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 20);
 
 		const count = await countBubbles(page);
 		expect(count).toBe(20);
@@ -808,14 +713,14 @@ test.describe("chat history pagination", () => {
 	test("scroll-to-top loads all 50 messages", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 20);
 
-		// Scroll to top
+		// Scroll to top to trigger load_history
 		await page.evaluate(() => {
 			const tl = document.getElementById("timeline");
 			if (tl) tl.scrollTop = 0;
 		});
-		await page.waitForTimeout(1000);
+		await waitForBubbles(page, 50, 10_000);
 
 		const count = await countBubbles(page);
 		expect(count).toBe(50);
@@ -829,14 +734,14 @@ test.describe("chat history pagination", () => {
 	test("messages maintain correct order after full load", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 20);
 
 		// Load full history
 		await page.evaluate(() => {
 			const tl = document.getElementById("timeline");
 			if (tl) tl.scrollTop = 0;
 		});
-		await page.waitForTimeout(1000);
+		await waitForBubbles(page, 50, 10_000);
 
 		const bubbles = await getChatBubbles(page);
 
@@ -855,22 +760,21 @@ test.describe("chat history pagination", () => {
 	test("new message after full load appends correctly", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 20);
 
 		// Load full history
 		await page.evaluate(() => {
 			const tl = document.getElementById("timeline");
 			if (tl) tl.scrollTop = 0;
 		});
-		await page.waitForTimeout(1000);
+		await waitForBubbles(page, 50, 10_000);
 
 		const preCount = await countBubbles(page);
 
 		// Send a new message
-		await page.fill("#input", "New question after pagination");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "New question after pagination");
+		await page.getByTestId("send-button").click();
 		await waitForUserBubble(page, "New question after pagination");
-		await page.waitForTimeout(200);
 
 		simulateChatResponse(session, "New question after pagination", "Here's the answer to your new question.");
 		await waitForAssistantBubble(page, "answer to your new question");
@@ -890,32 +794,8 @@ test.describe("chat history pagination", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 test.describe("agent streaming and status", () => {
-	let tempDir: string;
-	let port: number;
-	let token: string;
-	let session: MockSession;
-
-	test.beforeAll(async () => {
-		tempDir = makeTempDir();
-		session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
-
-		const result = await start({
-			cwd: tempDir,
-			sessionFactory: factory,
-			skipPrompt: true,
-		});
-		port = parseInt(new URL(result.url).port);
-		token = result.token;
-	});
-
-	test.afterAll(async () => {
-		reset();
-		await new Promise((r) => setTimeout(r, 100));
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {}
-	});
+	// worker-scoped engine shared across all streaming tests
+	const { port, token, session } = withEngine();
 
 	test("streaming response shows in real-time, then finalizes", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
@@ -923,53 +803,33 @@ test.describe("agent streaming and status", () => {
 
 		// Start agent turn
 		addUserMessage(session, "Explain caching");
-		handleEvent({ type: "agent_start" } as any);
-		handleEvent({ type: "message_start", message: { role: "assistant" } } as any);
+		handleEvent(evAgentStart());
+		handleEvent(evMessageStart());
 
 		// Send a few chunks
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "## Caching\n\n" },
-		} as any);
+		handleEvent(evTextDelta("## Caching\n\n"));
 
-		await page.waitForTimeout(200);
+		// Wait for streaming bubble to appear
+		await expect(page.locator(".streaming").first()).toBeVisible({ timeout: 5000 });
 
 		// Should see a streaming bubble
-		const streamingCount = await page.evaluate(
-			() => document.querySelectorAll(".streaming").length,
-		);
-		expect(streamingCount).toBeGreaterThanOrEqual(1);
+		expect(await page.locator(".streaming").count()).toBeGreaterThanOrEqual(1);
 
 		// More chunks
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "The application uses Redis for caching " },
-		} as any);
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "with a TTL of 300 seconds." },
-		} as any);
+		handleEvent(evTextDelta("The application uses Redis for caching "));
+		handleEvent(evTextDelta("with a TTL of 300 seconds."));
 
 		// End the message
-		handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_end" } } as any);
-		handleEvent({
-			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "## Caching\n\nThe application uses Redis for caching with a TTL of 300 seconds." }],
-				usage: { input: 300, output: 100 },
-			},
-		} as any);
+		handleEvent(evTextEnd());
+		handleEvent(evMessageEnd("## Caching\n\nThe application uses Redis for caching with a TTL of 300 seconds."));
 		addAssistantMessage(session, "## Caching\n\nThe application uses Redis for caching with a TTL of 300 seconds.");
-		handleEvent({ type: "agent_end" } as any);
+		handleEvent(evAgentEnd());
 
-		await page.waitForTimeout(300);
+		// Wait for streaming to end
+		await expect(page.locator(".streaming")).toHaveCount(0, { timeout: 5000 });
 
 		// Streaming class should be gone
-		const finalStreamingCount = await page.evaluate(
-			() => document.querySelectorAll(".streaming").length,
-		);
-		expect(finalStreamingCount).toBe(0);
+		expect(await page.locator(".streaming").count()).toBe(0);
 
 		// Final text should be rendered
 		await waitForAssistantBubble(page, "Redis");
@@ -979,52 +839,39 @@ test.describe("agent streaming and status", () => {
 	test("abort button stops the agent", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(300);
 
 		// Start a streaming turn
-		handleEvent({ type: "agent_start" } as any);
-		handleEvent({ type: "message_start", message: { role: "assistant" } } as any);
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "Starting long response..." },
-		} as any);
+		handleEvent(evAgentStart());
+		handleEvent(evMessageStart());
+		handleEvent(evTextDelta("Starting long response..."));
 
-		await page.waitForTimeout(300);
+		// Wait for streaming indicator before clicking abort
+		await expect(page.locator(".streaming").first()).toBeVisible({ timeout: 5000 });
 
 		// Click abort button
 		const abortBtn = page.locator("#abortBtn");
 		if (await abortBtn.isVisible()) {
 			await abortBtn.click();
-			await page.waitForTimeout(300);
+			// Wait for abort to propagate to the mock session
+			await waitFor(() => session._wasAborted(), 3000);
 
 			// Verify abort was called on the session
 			expect(session._wasAborted()).toBe(true);
 		}
 
 		// Clean up the streaming state
-		handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_end" } } as any);
-		handleEvent({
-			type: "message_end",
-			message: { role: "assistant", content: [{ type: "text", text: "Starting long response..." }], usage: { input: 100, output: 20 } },
-		} as any);
+		handleEvent(evTextEnd());
+		handleEvent(evMessageEnd("Starting long response..."));
 		addAssistantMessage(session, "Starting long response...");
-		handleEvent({ type: "agent_end" } as any);
+		handleEvent(evAgentEnd());
 		session._resetAbort();
 	});
 
 	test("cost tracking displays in status bar", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
 
-		// The status bar should show cost info (from cumulative usage)
-		const costText = await page.evaluate(() => {
-			const el = document.getElementById("statCost");
-			return el ? el.textContent : "";
-		});
-
-		// Cost should either be empty (if no usage yet) or show a dollar amount
-		// Just verify the element exists
+		// Cost element should exist (may be empty or show a dollar amount)
 		const costEl = page.locator("#statCost");
 		await expect(costEl).toBeAttached();
 	});
@@ -1035,79 +882,43 @@ test.describe("agent streaming and status", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 test.describe("reconnect during active streaming", () => {
-	let tempDir: string;
-	let port: number;
-	let token: string;
-	let session: MockSession;
+	// worker-scoped engine; initial state seeded in beforeAll
+	const ctx = withEngine();
 
-	test.beforeAll(async () => {
-		tempDir = makeTempDir();
-		session = createMockSession();
-		const factory: SessionFactory = async () => session as any;
-
-		const result = await start({
-			cwd: tempDir,
-			sessionFactory: factory,
-			skipPrompt: true,
-		});
-		port = parseInt(new URL(result.url).port);
-		token = result.token;
-
-		// Set up initial state
-		simulateExploration(session);
-		addAssistantMessage(session, "Document written.");
-		handleEvent({ type: "agent_end" } as any);
-	});
-
-	test.afterAll(async () => {
-		reset();
-		await new Promise((r) => setTimeout(r, 100));
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {}
+	test.beforeAll(() => {
+		simulateExploration(ctx.session);
+		addAssistantMessage(ctx.session, "Document written.");
+		handleEvent(evAgentEnd());
 	});
 
 	test("disconnect during stream, complete stream, reconnect → message appears", async ({ page }) => {
-		await page.goto(`http://localhost:${port}/`);
-		await authenticate(page, token);
-		await page.waitForTimeout(300);
+		await page.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page, ctx.token);
 
 		// Start streaming
-		addUserMessage(session, "What is the deployment process?");
-		handleEvent({ type: "agent_start" } as any);
-		handleEvent({ type: "message_start", message: { role: "assistant" } } as any);
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "## Deployment\n\n" },
-		} as any);
+		addUserMessage(ctx.session, "What is the deployment process?");
+		handleEvent(evAgentStart());
+		handleEvent(evMessageStart());
+		handleEvent(evTextDelta("## Deployment\n\n"));
 
-		await page.waitForTimeout(200);
+		// Wait for streaming bubble before disconnecting mid-stream
+		await expect(page.locator(".streaming").first()).toBeVisible({ timeout: 5000 });
 
 		// Disconnect mid-stream
 		await page.goto("about:blank");
-		await page.waitForTimeout(200);
+		await page.waitForTimeout(100); // acceptable: wait for WS close
 
 		// Complete the stream while disconnected
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "Deploy with Docker and Kubernetes." },
-		} as any);
-		handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_end" } } as any);
-		handleEvent({
-			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "## Deployment\n\nDeploy with Docker and Kubernetes." }],
-				usage: { input: 200, output: 80 },
-			},
-		} as any);
-		addAssistantMessage(session, "## Deployment\n\nDeploy with Docker and Kubernetes.");
-		handleEvent({ type: "agent_end" } as any);
+		handleEvent(evTextDelta("Deploy with Docker and Kubernetes."));
+		handleEvent(evTextEnd());
+		handleEvent(evMessageEnd("## Deployment\n\nDeploy with Docker and Kubernetes."));
+		addAssistantMessage(ctx.session, "## Deployment\n\nDeploy with Docker and Kubernetes.");
+		handleEvent(evAgentEnd());
 
 		// Reconnect
-		await page.goto(`http://localhost:${port}/`);
-		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await page.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page, ctx.token);
+		await waitForBubbles(page, 1);
 
 		// The completed message should be in chat history
 		const bubbles = await getChatBubbles(page);
@@ -1118,28 +929,26 @@ test.describe("reconnect during active streaming", () => {
 
 	test("multiple disconnects during ongoing conversation", async ({ page }) => {
 		// First exchange
-		await page.goto(`http://localhost:${port}/`);
-		await authenticate(page, token);
-		await page.waitForTimeout(300);
+		await page.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page, ctx.token);
 
-		await page.fill("#input", "Explain module A");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "Explain module A");
+		await page.getByTestId("send-button").click();
 		await waitForUserBubble(page, "module A");
-		await page.waitForTimeout(200);
-		simulateChatResponse(session, "Explain module A", "Module A handles authentication.");
+		simulateChatResponse(ctx.session, "Explain module A", "Module A handles authentication.");
 		await waitForAssistantBubble(page, "authentication");
 
 		// Disconnect
 		await page.goto("about:blank");
-		await page.waitForTimeout(200);
+		await page.waitForTimeout(100); // acceptable: wait for WS close
 
 		// Second exchange (happens while disconnected — another client or API)
-		simulateChatResponse(session, "Explain module B", "Module B handles authorization.");
+		simulateChatResponse(ctx.session, "Explain module B", "Module B handles authorization.");
 
 		// Reconnect
-		await page.goto(`http://localhost:${port}/`);
-		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await page.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page, ctx.token);
+		await waitForBubbles(page, 2);
 
 		// Both exchanges should be visible
 		const bubbles = await getChatBubbles(page);
@@ -1148,15 +957,15 @@ test.describe("reconnect during active streaming", () => {
 
 		// Disconnect again
 		await page.goto("about:blank");
-		await page.waitForTimeout(200);
+		await page.waitForTimeout(100); // acceptable: wait for WS close
 
 		// Third exchange while disconnected
-		simulateChatResponse(session, "Explain module C", "Module C handles data validation.");
+		simulateChatResponse(ctx.session, "Explain module C", "Module C handles data validation.");
 
 		// Reconnect
-		await page.goto(`http://localhost:${port}/`);
-		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await page.goto(`http://localhost:${ctx.port}/`);
+		await authenticate(page, ctx.token);
+		await waitForBubbles(page, 3);
 
 		// All three should be present
 		const allBubbles = await getChatBubbles(page);
