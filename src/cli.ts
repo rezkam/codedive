@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+/* eslint-disable no-console */
+// CLI stdout output (completion lists, model lists) intentionally uses console.log.
 /**
  * StoryOf CLI - Production-grade TypeScript CLI application.
  *

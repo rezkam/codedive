@@ -153,7 +153,7 @@ tailwind.config = {
   <div class="flex-1"></div>
   <div class="flex gap-2 items-center shrink-0">
     <button onclick="refreshDoc()" class="px-2.5 py-1 text-[11px] font-sans bg-slate-800 border border-slate-700 rounded-md text-slate-400 hover:text-emerald-400 hover:border-emerald-400/40 transition-all">↻ Doc</button>
-    <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-slate-800 border border-slate-700 rounded-md text-slate-400" id="sessionPill">
+    <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-slate-800 border border-slate-700 rounded-md text-slate-400" id="sessionPill" data-testid="connection-status">
       <span class="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0 transition-all" id="pillDot"></span>
       <span id="pillText">connecting…</span>
     </div>
@@ -204,7 +204,7 @@ tailwind.config = {
       <span class="text-xs font-medium text-slate-400 tracking-wide uppercase">Deep Chat</span>
     </div>
     <!-- Timeline -->
-    <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-2 slim-scroll" id="timeline">
+    <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-2 slim-scroll" id="timeline" data-testid="timeline">
       <div class="flex-1 flex items-center justify-center text-slate-500 text-[13px] text-center p-8 leading-relaxed" id="emptyState">
         The agent is exploring the codebase.<br>Ask questions here once it's ready — or anytime.
       </div>
@@ -215,7 +215,7 @@ tailwind.config = {
       ↓ New messages
     </button>
     <!-- Working indicator -->
-    <div class="working items-center gap-2.5 px-4 py-2 border-t border-slate-800 bg-slate-900/80 shrink-0" id="working">
+    <div class="working items-center gap-2.5 px-4 py-2 border-t border-slate-800 bg-slate-900/80 shrink-0" id="working" data-testid="working-indicator">
       <div class="w-3.5 h-3.5 border-2 border-slate-700 border-t-amber-400 rounded-full animate-spin2 shrink-0"></div>
       <span class="text-xs font-mono text-slate-400 truncate" id="workingText"></span>
       <span class="text-[11px] font-mono text-slate-500 shrink-0 ml-auto" id="workingElapsed"></span>
@@ -233,9 +233,9 @@ tailwind.config = {
 
     <!-- Input bar -->
     <div class="input-bar flex gap-2 items-end p-3 border-t border-slate-800 shrink-0">
-      <textarea id="input" placeholder="Ask about the architecture…" rows="1"
+      <textarea id="input" data-testid="chat-input" placeholder="Ask about the architecture…" rows="1"
         class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 font-sans text-[13px] leading-relaxed resize-none min-h-[38px] max-h-[120px] outline-none focus:border-emerald-400/50 transition-colors placeholder:text-slate-500"></textarea>
-      <button class="w-[38px] h-[38px] rounded-lg bg-emerald-500 hover:bg-emerald-400 flex items-center justify-center shrink-0 transition-all border-none cursor-pointer" id="sendBtn" onclick="onSendClick()">
+      <button class="w-[38px] h-[38px] rounded-lg bg-emerald-500 hover:bg-emerald-400 flex items-center justify-center shrink-0 transition-all border-none cursor-pointer" id="sendBtn" data-testid="send-button" onclick="onSendClick()">
         <svg id="sendIcon" viewBox="0 0 24 24" class="w-4 h-4 fill-slate-950"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         <svg id="stopIcon" viewBox="0 0 24 24" class="w-4 h-4 fill-slate-950 hidden"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
       </button>
@@ -246,7 +246,7 @@ tailwind.config = {
 
 
 <!-- Auth screen -->
-<div id="authScreen" class="fixed inset-0 z-[300] bg-slate-950 flex items-center justify-center">
+<div id="authScreen" data-testid="auth-screen" class="fixed inset-0 z-[300] bg-slate-950 flex items-center justify-center">
   <div class="w-full max-w-sm mx-4">
     <div class="text-center mb-8">
       <div class="font-heading font-bold text-2xl mb-2">🔍 <span class="text-emerald-400">StoryOf</span></div>
@@ -254,10 +254,10 @@ tailwind.config = {
     </div>
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
       <label class="block text-xs font-mono text-slate-400 mb-2 uppercase tracking-wider">Session Token</label>
-      <input id="authInput" type="text" spellcheck="false" autocomplete="off" placeholder="Paste token here…"
+      <input id="authInput" data-testid="auth-input" type="text" spellcheck="false" autocomplete="off" placeholder="Paste token here…"
         class="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-slate-200 font-mono text-sm outline-none focus:border-emerald-400/50 transition-colors placeholder:text-slate-600">
       <div id="authError" class="hidden mt-3 text-xs text-rose-400 font-mono"></div>
-      <button id="authBtn" onclick="submitToken()"
+      <button id="authBtn" data-testid="auth-submit" onclick="submitToken()"
         class="w-full mt-4 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm transition-all cursor-pointer border-none">
         Connect
       </button>
@@ -943,6 +943,7 @@ function handleEvent(data) {
       if (!streamBubble && pendingAssistant && streamText.trim()) {
         streamBubble = addBubble('assistant', '', true);
         streamBubble.classList.add('streaming');
+        streamBubble.dataset.streaming = 'true';
       }
       if (streamBubble) { streamBubble.innerHTML = renderMd(streamText) + '<span class="inline-block w-0.5 h-3.5 bg-slate-400 animate-blink align-text-bottom ml-0.5"></span>'; scrollTl(); }
     }
@@ -957,14 +958,14 @@ function handleEvent(data) {
       const text = extractText(evt.message);
       if (text && text !== streamText) {
         finishThinking(); streamText = text;
-        if (!streamBubble && pendingAssistant && streamText.trim()) { streamBubble = addBubble('assistant', '', true); streamBubble.classList.add('streaming'); }
+        if (!streamBubble && pendingAssistant && streamText.trim()) { streamBubble = addBubble('assistant', '', true); streamBubble.classList.add('streaming'); streamBubble.dataset.streaming = 'true'; }
         if (streamBubble) { streamBubble.innerHTML = renderMd(streamText) + '<span class="inline-block w-0.5 h-3.5 bg-slate-400 animate-blink align-text-bottom ml-0.5"></span>'; scrollTl(); }
       }
     }
   }
 
   if (et === 'text_done') {
-    if (streamBubble) { if (streamText.trim()) { streamBubble.innerHTML = renderMd(streamText); highlightCode(streamBubble); pushChatLog('a', streamText); streamBubble.classList.remove('streaming'); } else streamBubble.remove(); streamBubble = null; }
+    if (streamBubble) { if (streamText.trim()) { streamBubble.innerHTML = renderMd(streamText); highlightCode(streamBubble); pushChatLog('a', streamText); streamBubble.classList.remove('streaming'); streamBubble.removeAttribute('data-streaming'); } else streamBubble.remove(); streamBubble = null; }
     textDoneHandled = true; streamText = ''; pendingAssistant = false; cleanOrphanedStreaming();
   }
 
@@ -972,7 +973,7 @@ function handleEvent(data) {
     finishThinking();
     if (textDoneHandled) { textDoneHandled = false; cleanOrphanedStreaming(); return; }
     const text = evt.message.text || extractText(evt.message) || streamText;
-    if (streamBubble) { if (text.trim()) { streamBubble.innerHTML = renderMd(text); highlightCode(streamBubble); pushChatLog('a', text); streamBubble.classList.remove('streaming'); } else streamBubble.remove(); streamBubble = null; }
+    if (streamBubble) { if (text.trim()) { streamBubble.innerHTML = renderMd(text); highlightCode(streamBubble); pushChatLog('a', text); streamBubble.classList.remove('streaming'); streamBubble.removeAttribute('data-streaming'); } else streamBubble.remove(); streamBubble = null; }
     else if (text.trim()) addBubble('assistant', text);
     cleanOrphanedStreaming(); streamText = ''; pendingAssistant = false; scrollTl();
   }
@@ -1021,6 +1022,7 @@ function handleEvent(data) {
 function createThinkingBlock() {
   const el = document.createElement('div');
   el.className = 'shrink-0 animate-fade';
+  el.dataset.testid = 'thinking-block';
   el.innerHTML = `
     <div class="flex items-center gap-2 py-1 cursor-pointer select-none text-[13px] text-slate-500 hover:text-slate-400 transition-colors thinking-header"
          onclick="const c=this.nextElementSibling; const open=c.style.display!=='block'; c.style.display=open?'block':'none'; this.querySelector('.chev').textContent=open?'▼':'▶';">
@@ -1042,12 +1044,12 @@ function finishThinking() { if (thinkingBlock) { updateThinkingBlock(thinkingBlo
 // Stream + cleanup helpers
 // ═══════════════════════════════════════════════════════════════
 function finishStream() {
-  if (streamBubble) { if (streamText.trim()) { streamBubble.innerHTML = renderMd(streamText); highlightCode(streamBubble); pushChatLog('a', streamText); streamBubble.classList.remove('streaming'); } else streamBubble.remove(); streamBubble = null; }
+  if (streamBubble) { if (streamText.trim()) { streamBubble.innerHTML = renderMd(streamText); highlightCode(streamBubble); pushChatLog('a', streamText); streamBubble.classList.remove('streaming'); streamBubble.removeAttribute('data-streaming'); } else streamBubble.remove(); streamBubble = null; }
   streamText = ''; pendingAssistant = false; cleanOrphanedStreaming();
 }
 function cleanOrphanedStreaming() {
   if (streamBubble) return;
-  document.querySelectorAll('.streaming').forEach(el => el.classList.remove('streaming'));
+  document.querySelectorAll('.streaming').forEach(el => { el.classList.remove('streaming'); el.removeAttribute('data-streaming'); });
   document.querySelectorAll('.msg-md .animate-blink').forEach(el => el.remove());
 }
 
@@ -1092,6 +1094,7 @@ function addToolCard(id, name, label, args) {
   const el = document.createElement('div');
   el.className = 'tc p-2 border border-amber-400/20 rounded-lg bg-slate-900 shrink-0 overflow-hidden animate-fade running';
   el.dataset.id = id;
+  el.dataset.testid = 'tool-call-card';
   el.innerHTML = `
     <div class="tc-head flex items-center gap-2 cursor-pointer select-none" onclick="this.parentElement.classList.toggle('open')">
       <span class="tc-status w-4 h-4 flex items-center justify-center shrink-0"><span class="w-3.5 h-3.5 border-2 border-slate-700 border-t-amber-400 rounded-full animate-spin2"></span></span>
@@ -1177,6 +1180,8 @@ function addBubble(role, text, empty) {
   } else {
     div.className = 'msg-md p-2.5 rounded-lg text-[13px] leading-relaxed break-words shrink-0 animate-fade bg-slate-900 border border-slate-800';
   }
+  div.dataset.testid = 'chat-message';
+  div.dataset.role = role;
   if (!empty) {
     div.innerHTML = role === 'assistant' ? renderMd(text) : esc(text);
     if (role === 'assistant') highlightCode(div);

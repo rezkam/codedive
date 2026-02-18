@@ -1,3 +1,5 @@
+/* eslint-disable no-console */
+// This module is the intentional console abstraction layer — console calls here are correct.
 /**
  * Production-grade CLI logger with structured output.
  */
