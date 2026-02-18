@@ -15,11 +15,8 @@
  * are fired programmatically from the test.
  */
 
-import { test, expect, type Page } from "@playwright/test";
-import * as crypto from "node:crypto";
+import { test, expect } from "@playwright/test";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
 import {
 	start,
 	stop,
@@ -29,190 +26,36 @@ import {
 	extractChatMessages,
 	type SessionFactory,
 } from "../../src/engine.js";
-import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import {
+	createMockSession,
+	type MockSession,
+	addUserMessage,
+	addAssistantMessage,
+	addExplorationMessages,
+	simulateChatResponse,
+} from "./fixtures/mock-session.js";
+import {
+	makeTempDir,
+	authenticate,
+	getChatBubbles,
+	countBubbles,
+	waitForUserBubble,
+	waitForAssistantBubble,
+	waitForBubbles,
+} from "./fixtures/page-helpers.js";
+import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import {
+	evAgentStart,
+	evAgentEnd,
+	evMessageStart,
+	evTextDelta,
+	evTextEnd,
+	evMessageEnd,
+} from "../helpers/events.js";
 
 // ═══════════════════════════════════════════════════════════════════════
-// Mock agent session
+// Tests
 // ═══════════════════════════════════════════════════════════════════════
-
-function createMockSession() {
-	const subscribers: Array<(event: AgentSessionEvent) => void> = [];
-	let aborted = false;
-	const promptCalls: string[] = [];
-
-	return {
-		subscribe(fn: (event: AgentSessionEvent) => void) {
-			subscribers.push(fn);
-			return () => {
-				const idx = subscribers.indexOf(fn);
-				if (idx >= 0) subscribers.splice(idx, 1);
-			};
-		},
-		async prompt(text: string, _opts?: any) {
-			promptCalls.push(text);
-		},
-		async abort() {
-			aborted = true;
-		},
-		async setModel() {},
-		_messages: [] as any[],
-		get messages() {
-			return this._messages;
-		},
-		get state() {
-			return { messages: this._messages };
-		},
-		_emit(event: AgentSessionEvent) {
-			for (const fn of subscribers) fn(event);
-		},
-		_wasAborted: () => aborted,
-		_promptCalls: promptCalls,
-	};
-}
-
-type MockSession = ReturnType<typeof createMockSession>;
-
-// ═══════════════════════════════════════════════════════════════════════
-// Test helpers
-// ═══════════════════════════════════════════════════════════════════════
-
-const MARKDOWN_SUFFIX =
-	"\n\n[Respond in well-structured markdown. Use headings (##), bullet lists, fenced code blocks with language tags (```ts), tables, bold/italic for emphasis. Keep responses clear and organized.]";
-
-function makeTempDir(): string {
-	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `storyof-browser-test-${id}`);
-	fs.mkdirSync(dir, { recursive: true });
-	return dir;
-}
-
-/** Push a user message into the mock session's message history. */
-function addUserMessage(session: MockSession, text: string) {
-	session._messages.push({
-		role: "user",
-		content: [{ type: "text", text: text + MARKDOWN_SUFFIX }],
-		timestamp: Date.now(),
-	});
-}
-
-/** Push an assistant text message into the mock session's message history. */
-function addAssistantMessage(session: MockSession, text: string) {
-	session._messages.push({
-		role: "assistant",
-		content: [{ type: "text", text }],
-		usage: { input: 100, output: 50 },
-		timestamp: Date.now(),
-	});
-}
-
-/** Simulate a complete agent chat response with streaming events. */
-function simulateChatResponse(session: MockSession, userText: string, responseText: string) {
-	// Add user message to session history (what the SDK would do)
-	addUserMessage(session, userText);
-
-	// Fire streaming events through the engine
-	handleEvent({ type: "agent_start" } as any);
-	handleEvent({
-		type: "message_start",
-		message: { role: "assistant" },
-	} as any);
-
-	// Stream the response in chunks
-	const chunks = responseText.match(/.{1,20}/g) || [responseText];
-	for (const chunk of chunks) {
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: chunk },
-		} as any);
-	}
-
-	// End the message
-	handleEvent({
-		type: "message_update",
-		assistantMessageEvent: { type: "text_end" },
-	} as any);
-	handleEvent({
-		type: "message_end",
-		message: {
-			role: "assistant",
-			content: [{ type: "text", text: responseText }],
-			usage: { input: 100, output: 50 },
-		},
-	} as any);
-
-	// Add assistant message to session history
-	addAssistantMessage(session, responseText);
-
-	handleEvent({ type: "agent_end" } as any);
-}
-
-/** Authenticate the browser by entering the token. */
-async function authenticate(page: Page, token: string) {
-	// Check if auth screen is visible (might already be hidden if token is in sessionStorage)
-	const authHidden = await page.evaluate(
-		() => document.getElementById("authScreen")?.classList.contains("hidden"),
-	);
-
-	if (!authHidden) {
-		await page.fill("#authInput", token);
-		await page.click("#authBtn");
-	}
-
-	// Wait for auth screen to get the 'hidden' class (WebSocket connected)
-	await page.waitForFunction(
-		() => document.getElementById("authScreen")?.classList.contains("hidden"),
-		{ timeout: 5000 },
-	);
-
-	// Wait for WebSocket init message to be processed
-	await page.waitForFunction(() => {
-		const pill = document.getElementById("pillText");
-		return pill && pill.textContent !== "connecting…";
-	}, { timeout: 5000 });
-}
-
-/** Wait for a user bubble containing specific text. */
-async function waitForUserBubble(page: Page, text: string, timeout = 5000) {
-	// User bubbles have bg-emerald-400/5 class
-	await page.waitForFunction(
-		(t) => {
-			const bubbles = document.querySelectorAll(".msg-md");
-			return Array.from(bubbles).some(
-				(b) => b.classList.contains("ml-8") && b.textContent?.includes(t),
-			);
-		},
-		text,
-		{ timeout },
-	);
-}
-
-/** Wait for an assistant bubble containing specific text. */
-async function waitForAssistantBubble(page: Page, text: string, timeout = 5000) {
-	await page.waitForFunction(
-		(t) => {
-			const bubbles = document.querySelectorAll(".msg-md:not(.ml-8):not(.streaming)");
-			return Array.from(bubbles).some((b) => b.textContent?.includes(t));
-		},
-		text,
-		{ timeout },
-	);
-}
-
-/** Get all chat bubble texts from the page. */
-async function getChatBubbles(page: Page): Promise<Array<{ role: string; text: string }>> {
-	return page.evaluate(() => {
-		const bubbles = document.querySelectorAll("#timeline .msg-md");
-		return Array.from(bubbles).map((b) => ({
-			role: b.classList.contains("ml-8") ? "user" : "assistant",
-			text: (b.textContent || "").trim(),
-		}));
-	});
-}
-
-/** Count chat bubbles on the page. */
-async function countBubbles(page: Page): Promise<number> {
-	return page.evaluate(() => document.querySelectorAll("#timeline .msg-md").length);
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
@@ -226,7 +69,7 @@ let session: MockSession;
 test.beforeAll(async () => {
 	tempDir = makeTempDir();
 	session = createMockSession();
-	const factory: SessionFactory = async () => session as any;
+	const factory: SessionFactory = async () => session as unknown as AgentSession;
 
 	const result = await start({
 		cwd: tempDir,
@@ -269,8 +112,8 @@ test.beforeAll(async () => {
 	});
 
 	// Signal that the initial exploration is "done"
-	handleEvent({ type: "agent_start" } as any);
-	handleEvent({ type: "agent_end" } as any);
+	handleEvent(evAgentStart());
+	handleEvent(evAgentEnd());
 });
 
 test.afterAll(async () => {
@@ -286,8 +129,8 @@ test.describe("auth flow", () => {
 		await page.goto(`http://localhost:${port}/`);
 
 		// Auth screen is visible
-		await expect(page.locator("#authScreen")).toBeVisible();
-		await expect(page.locator("#authInput")).toBeVisible();
+		await expect(page.getByTestId("auth-screen")).toBeVisible();
+		await expect(page.getByTestId("auth-input")).toBeVisible();
 
 		// Enter token and submit
 		await authenticate(page, token);
@@ -298,13 +141,11 @@ test.describe("auth flow", () => {
 
 	test("rejects invalid token", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
-		await page.fill("#authInput", "wrong-token-12345");
-		await page.click("#authBtn");
+		await page.getByTestId("auth-input").fill( "wrong-token-12345");
+		await page.getByTestId("auth-submit").click();
 
-		// Auth screen should remain visible (or show error)
-		// The WebSocket connection will fail and show auth error
-		await page.waitForTimeout(1500);
-		await expect(page.locator("#authScreen")).not.toHaveClass(/hidden/);
+		// Auth screen should remain visible (bad token rejected)
+		await expect(page.getByTestId("auth-screen")).not.toHaveClass(/hidden/, { timeout: 3000 });
 	});
 });
 
@@ -314,14 +155,11 @@ test.describe("chat messaging", () => {
 		await authenticate(page, token);
 
 		// Type a message
-		await page.fill("#input", "What does main.ts do?");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "What does main.ts do?");
+		await page.getByTestId("send-button").click();
 
 		// User bubble should appear immediately (browser-side)
 		await waitForUserBubble(page, "What does main.ts do?");
-
-		// Wait for the prompt to reach the server
-		await page.waitForTimeout(200);
 
 		// Simulate the agent responding
 		simulateChatResponse(
@@ -362,9 +200,7 @@ test.describe("chat history recovery", () => {
 		// Connect and verify we see chat history
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-
-		// Wait for chat_history to be processed
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 2);
 
 		// Should see restored chat messages
 		const bubbles = await getChatBubbles(page);
@@ -372,12 +208,12 @@ test.describe("chat history recovery", () => {
 
 		// Now disconnect by navigating away
 		await page.goto("about:blank");
-		await page.waitForTimeout(200);
+		await page.waitForTimeout(100); // acceptable: wait for WS close
 
 		// Reconnect
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 2);
 
 		// Chat history should be restored
 		const restoredBubbles = await getChatBubbles(page);
@@ -394,7 +230,7 @@ test.describe("chat history recovery", () => {
 		// This is a fresh page context — no sessionStorage
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 2);
 
 		const bubbles = await getChatBubbles(page);
 		expect(bubbles.length).toBeGreaterThanOrEqual(2);
@@ -416,7 +252,7 @@ test.describe("chat history recovery", () => {
 
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 6);
 
 		const bubbles = await getChatBubbles(page);
 
@@ -439,15 +275,14 @@ test.describe("chat history recovery", () => {
 	test("chat after reconnect adds to existing history", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		const beforeCount = await countBubbles(page);
 
 		// Send a new message
-		await page.fill("#input", "What about deployment?");
-		await page.click("#sendBtn");
+		await page.getByTestId("chat-input").fill( "What about deployment?");
+		await page.getByTestId("send-button").click();
 		await waitForUserBubble(page, "deployment");
-		await page.waitForTimeout(200);
 
 		// Simulate response
 		simulateChatResponse(
@@ -473,8 +308,8 @@ test.describe("chat history recovery", () => {
 		await page2.goto(`http://localhost:${port}/`);
 		await authenticate(page1, token);
 		await authenticate(page2, token);
-		await page1.waitForTimeout(500);
-		await page2.waitForTimeout(500);
+		await waitForBubbles(page1, 1);
+		await waitForBubbles(page2, 1);
 
 		const bubbles1 = await getChatBubbles(page1);
 		const bubbles2 = await getChatBubbles(page2);
@@ -504,7 +339,7 @@ test.describe("full history loading", () => {
 
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		// Should have received partial history (up to 20 messages)
 		const initialBubbles = await getChatBubbles(page);
@@ -518,7 +353,7 @@ test.describe("full history loading", () => {
 		});
 
 		// Wait for full history to load
-		await page.waitForTimeout(1000);
+		await waitForBubbles(page, totalMessages, 10_000);
 
 		const fullBubbles = await getChatBubbles(page);
 		expect(fullBubbles.length).toBe(totalMessages);
@@ -527,14 +362,15 @@ test.describe("full history loading", () => {
 	test("load_history returns all messages in correct order", async ({ page }) => {
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		// Scroll to top
 		await page.evaluate(() => {
 			const tl = document.getElementById("timeline");
 			if (tl) tl.scrollTop = 0;
 		});
-		await page.waitForTimeout(1000);
+		// Wait for full history
+		await waitForBubbles(page, 21, 10_000);
 
 		const bubbles = await getChatBubbles(page);
 
@@ -554,62 +390,42 @@ test.describe("streaming during reconnect", () => {
 
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		const beforeCount = await countBubbles(page);
 
 		// Start a streaming response
-		handleEvent({ type: "agent_start" } as any);
-		handleEvent({
-			type: "message_start",
-			message: { role: "assistant" },
-		} as any);
+		handleEvent(evAgentStart());
+		handleEvent(evMessageStart());
 
 		// Stream a few chunks
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "This is a " },
-		} as any);
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "partial response..." },
-		} as any);
+		handleEvent(evTextDelta("This is a "));
+		handleEvent(evTextDelta("partial response..."));
 
-		await page.waitForTimeout(200);
+		// Wait for streaming bubble to appear
+		await expect(page.locator(".streaming").first()).toBeVisible({ timeout: 5000 });
 
 		// Verify streaming bubble appeared
-		const streamingCount = await page.evaluate(
-			() => document.querySelectorAll(".streaming").length,
-		);
+		const streamingCount = await page.locator(".streaming").count();
 		expect(streamingCount).toBeGreaterThanOrEqual(1);
 
 		// Complete the response and update session
-		handleEvent({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_end" },
-		} as any);
-		handleEvent({
-			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "This is a partial response..." }],
-				usage: { input: 50, output: 20 },
-			},
-		} as any);
+		handleEvent(evTextEnd());
+		handleEvent(evMessageEnd("This is a partial response..."));
 		addUserMessage(session, "Streaming test question");
 		addAssistantMessage(session, "This is a partial response...");
-		handleEvent({ type: "agent_end" } as any);
-
-		await page.waitForTimeout(200);
+		handleEvent(evAgentEnd());
+		// Wait for streaming to end
+		await expect(page.locator(".streaming")).toHaveCount(0, { timeout: 5000 });
 
 		// Now navigate away (disconnect)
 		await page.goto("about:blank");
-		await page.waitForTimeout(200);
+		await page.waitForTimeout(100); // acceptable: wait for WS close
 
 		// Reconnect
 		await page.goto(`http://localhost:${port}/`);
 		await authenticate(page, token);
-		await page.waitForTimeout(500);
+		await waitForBubbles(page, 1);
 
 		// The completed message should be in chat history
 		const bubbles = await getChatBubbles(page);
@@ -619,5 +435,187 @@ test.describe("streaming during reconnect", () => {
 		expect(hasResponse).toBe(true);
 
 		await ctx.close();
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Reconnect edge cases (moved from read-only-mode.spec.ts)
+// chat-history.spec.ts is the canonical owner of all reconnect behavior
+// ═══════════════════════════════════════════════════════════════════════
+
+test.describe("reconnect edge cases", () => {
+	let localDir: string;
+	let localPort: number;
+	let localToken: string;
+	let localSession: ReturnType<typeof createMockSession>;
+
+	test.afterEach(async () => {
+		reset();
+		await new Promise((r) => setTimeout(r, 100));
+		try { fs.rmSync(localDir, { recursive: true, force: true }); } catch {}
+	});
+
+	test("rapid reconnect does not duplicate messages", async ({ page }) => {
+		localDir = makeTempDir("storyof-history");
+		localSession = createMockSession();
+		const factory: SessionFactory = async () => localSession as unknown as AgentSession;
+		const result = await start({ cwd: localDir, sessionFactory: factory, skipPrompt: true });
+		localPort = parseInt(new URL(result.url).port);
+		localToken = result.token;
+
+		addExplorationMessages(localSession);
+		handleEvent(evAgentStart());
+		handleEvent(evAgentEnd());
+		simulateChatResponse(localSession, "Hello", "Hi there!");
+		simulateChatResponse(localSession, "How are you?", "I'm doing well.");
+
+		await page.goto(`http://localhost:${localPort}/`);
+		await authenticate(page, localToken);
+		await waitForBubbles(page, 4);
+
+		const firstCount = await countBubbles(page);
+		expect(firstCount).toBe(4); // 2 user + 2 assistant
+
+		// Rapid disconnect/reconnect 3 times
+		for (let i = 0; i < 3; i++) {
+			await page.goto("about:blank");
+			await page.waitForTimeout(100); // acceptable: wait for WS close
+			await page.goto(`http://localhost:${localPort}/`);
+			await authenticate(page, localToken);
+			await waitForBubbles(page, 4);
+		}
+
+		const finalCount = await countBubbles(page);
+		expect(finalCount).toBe(4); // No duplicates
+	});
+
+	test("very long messages are preserved after reconnect", async ({ page }) => {
+		localDir = makeTempDir("storyof-history");
+		localSession = createMockSession();
+		const factory: SessionFactory = async () => localSession as unknown as AgentSession;
+		const result = await start({ cwd: localDir, sessionFactory: factory, skipPrompt: true });
+		localPort = parseInt(new URL(result.url).port);
+		localToken = result.token;
+
+		addExplorationMessages(localSession);
+		handleEvent(evAgentStart());
+		handleEvent(evAgentEnd());
+
+		const longAnswer = "## Architecture\n\n" + "This module handles data processing. ".repeat(80);
+		simulateChatResponse(localSession, "Explain the architecture", longAnswer);
+
+		await page.goto(`http://localhost:${localPort}/`);
+		await authenticate(page, localToken);
+		await waitForBubbles(page, 2);
+
+		const before = await getChatBubbles(page);
+		expect(before.length).toBe(2);
+		expect(before[1].text).toContain("Architecture");
+		expect(before[1].text.length).toBeGreaterThan(100);
+
+		await page.goto("about:blank");
+		await page.waitForTimeout(100); // acceptable: wait for WS close
+		await page.goto(`http://localhost:${localPort}/`);
+		await authenticate(page, localToken);
+		await waitForBubbles(page, 2);
+
+		const after = await getChatBubbles(page);
+		expect(after.length).toBe(2);
+		expect(after[1].text).toContain("Architecture");
+		expect(after[1].text.length).toBeGreaterThan(100);
+	});
+
+	test("chat input works after reconnect", async ({ page }) => {
+		localDir = makeTempDir("storyof-history");
+		localSession = createMockSession();
+		const factory: SessionFactory = async () => localSession as unknown as AgentSession;
+		const result = await start({ cwd: localDir, sessionFactory: factory, skipPrompt: true });
+		localPort = parseInt(new URL(result.url).port);
+		localToken = result.token;
+
+		addExplorationMessages(localSession);
+		handleEvent(evAgentStart());
+		handleEvent(evAgentEnd());
+
+		await page.goto(`http://localhost:${localPort}/`);
+		await authenticate(page, localToken);
+
+		await page.getByTestId("chat-input").fill( "First question");
+		await page.getByTestId("send-button").click();
+		await waitForUserBubble(page, "First question");
+		simulateChatResponse(localSession, "First question", "First answer.");
+		await waitForAssistantBubble(page, "First answer");
+
+		await page.goto("about:blank");
+		await page.waitForTimeout(100); // acceptable: wait for WS close
+		await page.goto(`http://localhost:${localPort}/`);
+		await authenticate(page, localToken);
+		await waitForBubbles(page, 2);
+
+		const restored = await getChatBubbles(page);
+		expect(restored.length).toBe(2);
+
+		await page.getByTestId("chat-input").fill( "Second question after reconnect");
+		await page.getByTestId("send-button").click();
+		await waitForUserBubble(page, "Second question after reconnect");
+		simulateChatResponse(localSession, "Second question after reconnect", "Second answer works!");
+		await waitForAssistantBubble(page, "Second answer works");
+
+		const final = await getChatBubbles(page);
+		expect(final.length).toBe(4);
+		expect(final[2].text).toContain("Second question");
+		expect(final[3].text).toContain("Second answer");
+	});
+
+	test("messages survive multiple reconnect cycles in correct order", async ({ page }) => {
+		localDir = makeTempDir("storyof-history");
+		localSession = createMockSession();
+		const factory: SessionFactory = async () => localSession as unknown as AgentSession;
+		const result = await start({ cwd: localDir, sessionFactory: factory, skipPrompt: true });
+		localPort = parseInt(new URL(result.url).port);
+		localToken = result.token;
+
+		addExplorationMessages(localSession);
+		handleEvent(evAgentStart());
+		handleEvent(evAgentEnd());
+
+		const exchanges = [
+			{ q: "Question Alpha", a: "Answer Alpha" },
+			{ q: "Question Beta", a: "Answer Beta" },
+			{ q: "Question Gamma", a: "Answer Gamma" },
+		];
+
+		for (let i = 0; i < exchanges.length; i++) {
+			await page.goto(`http://localhost:${localPort}/`);
+			await authenticate(page, localToken);
+
+			await page.getByTestId("chat-input").fill( exchanges[i].q);
+			await page.getByTestId("send-button").click();
+			await waitForUserBubble(page, exchanges[i].q);
+			simulateChatResponse(localSession, exchanges[i].q, exchanges[i].a);
+			await waitForAssistantBubble(page, exchanges[i].a);
+
+			const count = await countBubbles(page);
+			expect(count).toBe((i + 1) * 2);
+
+			if (i < exchanges.length - 1) {
+				await page.goto("about:blank");
+				await page.waitForTimeout(100); // acceptable: wait for WS close
+			}
+		}
+
+		// Final reconnect — all messages in correct order
+		await page.goto("about:blank");
+		await page.waitForTimeout(100); // acceptable: wait for WS close
+		await page.goto(`http://localhost:${localPort}/`);
+		await authenticate(page, localToken);
+		await waitForBubbles(page, 6);
+
+		const all = await getChatBubbles(page);
+		expect(all.length).toBe(6);
+		for (let i = 0; i < exchanges.length; i++) {
+			expect(all[i * 2].text).toContain(exchanges[i].q.split(" ")[1]); // "Alpha"/"Beta"/"Gamma"
+			expect(all[i * 2 + 1].text).toContain(exchanges[i].a.split(" ")[1]);
+		}
 	});
 });
