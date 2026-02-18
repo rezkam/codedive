@@ -140,17 +140,25 @@ export class EngineStateMachine {
 
 	private maxCrashRestarts: number;
 	private maxValidationAttempts: number;
+	private backoffBase: number;
+	private backoffMax: number;
 	private onReadyCallback: (() => void) | null = null;
 
 	constructor(
 		options: {
 			maxCrashRestarts?: number;
 			maxValidationAttempts?: number;
+			/** Base backoff delay in ms (default 2000). Set to a small value in tests. */
+			backoffBase?: number;
+			/** Maximum backoff delay in ms (default 15000). Set to a small value in tests. */
+			backoffMax?: number;
 			onReady?: () => void;
 		} = {},
 	) {
 		this.maxCrashRestarts = options.maxCrashRestarts ?? MAX_CRASH_RESTARTS;
 		this.maxValidationAttempts = options.maxValidationAttempts ?? MAX_VALIDATION_ATTEMPTS;
+		this.backoffBase = options.backoffBase ?? 2000;
+		this.backoffMax = options.backoffMax ?? 15000;
 		this.onReadyCallback = options.onReady ?? null;
 	}
 
@@ -295,7 +303,7 @@ export class EngineStateMachine {
 	}
 
 	private backoffMs(): number {
-		return Math.min(2000 * Math.pow(2, this.crashCount - 1), 15000);
+		return Math.min(this.backoffBase * Math.pow(2, this.crashCount - 1), this.backoffMax);
 	}
 
 	// ── Document and validation ───────────────────────────────────────
