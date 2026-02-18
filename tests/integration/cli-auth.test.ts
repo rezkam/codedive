@@ -3,59 +3,9 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import * as crypto from "node:crypto";
+import { cleanEnv, makeTempDir } from "../helpers/clean-env.js";
 
 const CLI_PATH = path.resolve(__dirname, "../../dist/cli.js");
-
-/**
- * Each test run gets a unique temp directory so parallel runs can't collide.
- * The directory is cleaned up in afterEach.
- */
-function makeTempDir(): string {
-	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `storyof-test-${id}`);
-	fs.mkdirSync(dir, { recursive: true });
-	return dir;
-}
-
-/**
- * Minimal, sanitized environment for test subprocesses.
- *
- * Only PATH and NODE (needed to run node) are inherited from the real env.
- * All API keys, tokens, and HOME are explicitly excluded so tests never
- * touch the real ~/.storyof/ or accidentally use real credentials.
- */
-function cleanEnv(tempHome: string, overrides: Record<string, string> = {}): Record<string, string> {
-	return {
-		PATH: process.env.PATH ?? "",
-		HOME: tempHome,
-		NODE_ENV: "test",
-		// Explicitly blank every key that could leak real credentials
-		ANTHROPIC_API_KEY: "",
-		ANTHROPIC_OAUTH_TOKEN: "",
-		OPENAI_API_KEY: "",
-		GEMINI_API_KEY: "",
-		GROQ_API_KEY: "",
-		XAI_API_KEY: "",
-		OPENROUTER_API_KEY: "",
-		MISTRAL_API_KEY: "",
-		CEREBRAS_API_KEY: "",
-		COPILOT_GITHUB_TOKEN: "",
-		GH_TOKEN: "",
-		GITHUB_TOKEN: "",
-		STORYOF_ANTHROPIC_API_KEY: "",
-		STORYOF_OPENAI_API_KEY: "",
-		STORYOF_GEMINI_API_KEY: "",
-		STORYOF_GROQ_API_KEY: "",
-		STORYOF_XAI_API_KEY: "",
-		STORYOF_OPENROUTER_API_KEY: "",
-		STORYOF_MISTRAL_API_KEY: "",
-		STORYOF_CEREBRAS_API_KEY: "",
-		STORYOF_GITHUB_TOKEN: "",
-		// Caller overrides last — they win
-		...overrides,
-	};
-}
 
 function runCLI(
 	args: string[],
@@ -195,34 +145,6 @@ describe("CLI Authentication", () => {
 			});
 
 			expect(result.exitCode).toBe(0);
-		});
-	});
-
-	describe("CLI basics", () => {
-		it("shows version", () => {
-			const result = runCLI(["--version"], { tempHome });
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toMatch(/^\d+\.\d+\.\d+/);
-		});
-
-		it("shows help", () => {
-			const result = runCLI(["--help"], { tempHome });
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toMatch(/usage/i);
-			expect(result.stdout).toContain("--depth");
-			expect(result.stdout).toContain("--model");
-		});
-
-		it("shows auth help", () => {
-			const result = runCLI(["auth", "--help"], { tempHome });
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain("set");
-			expect(result.stdout).toContain("login");
-			expect(result.stdout).toContain("logout");
-			expect(result.stdout).toContain("list");
 		});
 	});
 

@@ -9,33 +9,13 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
-import * as crypto from "node:crypto";
 import * as http from "node:http";
+import { cleanEnv, makeTempDir } from "../helpers/clean-env.js";
 
 const CLI_PATH = path.resolve(__dirname, "../../dist/cli.js");
-
-function makeTempDir(): string {
-	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `storyof-readiness-${id}`);
-	fs.mkdirSync(dir, { recursive: true });
-	return dir;
-}
-
-function cleanEnv(tempHome: string, overrides: Record<string, string> = {}): Record<string, string> {
-	return {
-		PATH: process.env.PATH ?? "",
-		HOME: tempHome,
-		NODE_ENV: "test",
-		ANTHROPIC_API_KEY: "",
-		OPENAI_API_KEY: "",
-		STORYOF_ANTHROPIC_API_KEY: "",
-		...overrides,
-	};
-}
 
 describe("Startup readiness", () => {
 	const cleanups: (() => void)[] = [];
@@ -112,24 +92,17 @@ describe("Startup readiness", () => {
 			});
 		});
 
-		// The spinner writes cursor-hide escape to stderr
-		const hasSpinner = result.stderr.includes("\x1B[?25l") || result.stderr.includes("[?25l");
+		// The CLI must write SOMETHING to stderr (spinner, error, or status)
+		// before any URL appears on stdout — this is the readiness gate invariant.
+		expect(result.stderr.length).toBeGreaterThan(0);
 
-		if (hasSpinner && stderrChunks.length > 0) {
-			const firstSpinnerTime = stderrChunks[0].time;
-
-			// If any stdout appeared (URL), it must be AFTER the spinner
-			if (stdoutChunks.length > 0) {
-				const firstStdoutTime = stdoutChunks[0].time;
-				expect(firstStdoutTime).toBeGreaterThanOrEqual(firstSpinnerTime);
-			}
-		}
-
-		// With a fake key, the agent creation might fail — that's fine.
-		// Key invariant: no URL appeared without spinner first.
+		// If a URL appeared on stdout, stderr must have come first (spinner showed)
 		if (result.stdout.includes("localhost")) {
-			// If URL appeared, spinner must have been shown
+			const hasSpinner = result.stderr.includes("\x1B[?25l") || result.stderr.includes("[?25l");
 			expect(hasSpinner).toBe(true);
+			if (stderrChunks.length > 0 && stdoutChunks.length > 0) {
+				expect(stderrChunks[0].time).toBeLessThanOrEqual(stdoutChunks[0].time);
+			}
 		}
 	}, 15000);
 
@@ -141,44 +114,41 @@ describe("Startup readiness", () => {
 		let port: number | null = null;
 		let token: string | null = null;
 
-		const result = await new Promise<void>((resolve) => {
-			const child = spawn("node", [CLI_PATH, "test"], {
-				env: cleanEnv(tempHome, { ANTHROPIC_API_KEY: "sk-ant-test-fake-2" }),
-				cwd: tempHome,
-			});
-			cleanups.push(() => { try { child.kill("SIGKILL"); } catch {} });
-
-			let output = "";
-			child.stdout.on("data", (d) => {
-				output += d.toString();
-				const pMatch = output.match(/localhost:(\d+)/);
-				const tMatch = output.match(/Token\s+(\S+)/);
-				if (pMatch) port = parseInt(pMatch[1], 10);
-				if (tMatch) token = tMatch[1];
-			});
-
-			// eslint-disable-next-line @typescript-eslint/no-misused-promises
-			setTimeout(async () => {
-				if (port) {
-					// Without token → 403
-					const noToken = await httpGet(`http://localhost:${port}/status`).catch(() => ({ status: 0, body: "" }));
-					expect(noToken.status).toBe(403);
-
-					if (token) {
-						// With token → 200
-						const withToken = await httpGet(`http://localhost:${port}/status?token=${token}`).catch(() => ({ status: 0, body: "" }));
-						expect(withToken.status).toBe(200);
-
-						const body = JSON.parse(withToken.body);
-						expect(body).toHaveProperty("agentRunning");
-						expect(body).toHaveProperty("targetPath");
-					}
-				}
-
-				child.kill("SIGTERM");
-				resolve();
-			}, 8000);
+		const child = spawn("node", [CLI_PATH, "test"], {
+			env: cleanEnv(tempHome, { ANTHROPIC_API_KEY: "sk-ant-test-fake-2" }),
+			cwd: tempHome,
 		});
+		cleanups.push(() => { try { child.kill("SIGKILL"); } catch {} });
+
+		let output = "";
+		child.stdout.on("data", (d) => {
+			output += d.toString();
+			const pMatch = output.match(/localhost:(\d+)/);
+			const tMatch = output.match(/Token\s+(\S+)/);
+			if (pMatch) port = parseInt(pMatch[1], 10);
+			if (tMatch) token = tMatch[1];
+		});
+
+		// Poll until the server announces its port (or 10s timeout)
+		await pollForServerReady(() => port !== null, 10_000);
+
+		if (port) {
+			// Without token → 403
+			const noToken = await httpGet(`http://localhost:${port}/status`).catch(() => ({ status: 0, body: "" }));
+			expect(noToken.status).toBe(403);
+
+			if (token) {
+				// With token → 200
+				const withToken = await httpGet(`http://localhost:${port}/status?token=${token}`).catch(() => ({ status: 0, body: "" }));
+				expect(withToken.status).toBe(200);
+
+				const body = JSON.parse(withToken.body);
+				expect(body).toHaveProperty("agentRunning");
+				expect(body).toHaveProperty("targetPath");
+			}
+		}
+
+		child.kill("SIGTERM");
 	}, 15000);
 });
 
@@ -219,5 +189,20 @@ function httpGet(url: string): Promise<{ status: number; body: string }> {
 		});
 		req.on("error", reject);
 		req.setTimeout(3000, () => { req.destroy(); reject(new Error("timeout")); });
+	});
+}
+
+/** Poll until condition() returns true, or deadline is exceeded. */
+function pollForServerReady(condition: () => boolean, timeoutMs: number): Promise<void> {
+	return new Promise((resolve) => {
+		const deadline = Date.now() + timeoutMs;
+		const check = () => {
+			if (condition() || Date.now() >= deadline) {
+				resolve();
+			} else {
+				setTimeout(check, 100);
+			}
+		};
+		check();
 	});
 }

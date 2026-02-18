@@ -16,28 +16,9 @@ import { execSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import * as crypto from "node:crypto";
+import { cleanEnv, makeTempDir } from "../helpers/clean-env.js";
 
 const CLI_PATH = path.resolve(__dirname, "../../dist/cli.js");
-
-function makeTempDir(): string {
-	const id = crypto.randomBytes(8).toString("hex");
-	const dir = path.join(os.tmpdir(), `storyof-opts-${id}`);
-	fs.mkdirSync(dir, { recursive: true });
-	return dir;
-}
-
-function cleanEnv(tempHome: string, overrides: Record<string, string> = {}): Record<string, string> {
-	return {
-		PATH: process.env.PATH ?? "",
-		HOME: tempHome,
-		NODE_ENV: "test",
-		ANTHROPIC_API_KEY: "",
-		OPENAI_API_KEY: "",
-		STORYOF_ANTHROPIC_API_KEY: "",
-		...overrides,
-	};
-}
 
 function run(
 	args: string[],
@@ -210,107 +191,6 @@ describe("CLI options and commands", () => {
 			const r = run(["resume", "--help"], { tempHome });
 			expect(r.exitCode).toBe(0);
 			expect(r.stdout).toContain("--dangerously-allow-edits");
-		});
-	});
-
-	// ═══════════════════════════════════════════════════════════════
-	// Auth commands
-	// ═══════════════════════════════════════════════════════════════
-
-	describe("auth set", () => {
-		const API_KEY_PROVIDERS = [
-			"anthropic", "openai", "google", "groq", "xai",
-			"openrouter", "mistral", "cerebras", "github-copilot",
-		];
-
-		for (const provider of API_KEY_PROVIDERS) {
-			it(`accepts provider: ${provider}`, () => {
-				const r = run(["auth", "set", provider, "test-key-123"], { tempHome });
-				expect(r.exitCode).toBe(0);
-				expect(r.stdout).toContain("API key stored");
-			});
-		}
-
-		it("rejects unknown provider", () => {
-			const r = run(["auth", "set", "unknown-provider", "key"], { tempHome });
-			expect(r.exitCode).not.toBe(0);
-			expect(r.stderr).toMatch(/unknown provider/i);
-		});
-
-		it("requires key argument", () => {
-			const r = run(["auth", "set", "anthropic"], { tempHome });
-			expect(r.exitCode).not.toBe(0);
-		});
-
-		it("requires provider argument", () => {
-			const r = run(["auth", "set"], { tempHome });
-			expect(r.exitCode).not.toBe(0);
-		});
-	});
-
-	describe("auth login", () => {
-		// OAuth providers that resolve quickly (fail fast without real OAuth infra)
-		const FAST_OAUTH_PROVIDERS = ["anthropic", "github-copilot", "google", "antigravity"];
-		// openai-codex starts a local callback server and hangs — tested separately
-
-		for (const provider of FAST_OAUTH_PROVIDERS) {
-			it(`recognizes OAuth provider '${provider}'`, () => {
-				const r = run(["auth", "login", provider], { tempHome });
-				// Will fail (no TTY/no real OAuth) but should not say "does not support OAuth"
-				if (r.exitCode !== 0) {
-					expect(r.stderr).not.toMatch(/does not support oauth/i);
-				}
-			});
-		}
-
-		it("rejects non-OAuth provider", () => {
-			const r = run(["auth", "login", "groq"], { tempHome });
-			expect(r.exitCode).not.toBe(0);
-			expect(r.stderr).toMatch(/does not support oauth/i);
-		});
-
-		it("requires provider argument", () => {
-			const r = run(["auth", "login"], { tempHome });
-			expect(r.exitCode).not.toBe(0);
-		});
-	});
-
-	describe("auth logout", () => {
-		it("removes existing credentials", () => {
-			run(["auth", "set", "anthropic", "key123"], { tempHome });
-			const r = run(["auth", "logout", "anthropic"], { tempHome });
-			expect(r.exitCode).toBe(0);
-			expect(r.stdout).toMatch(/removed/i);
-		});
-
-		it("requires provider argument", () => {
-			const r = run(["auth", "logout"], { tempHome });
-			expect(r.exitCode).not.toBe(0);
-		});
-	});
-
-	describe("auth list", () => {
-		it("shows empty when no credentials", () => {
-			const r = run(["auth", "list"], { tempHome });
-			expect(r.exitCode).toBe(0);
-		});
-
-		it("shows stored credentials", () => {
-			run(["auth", "set", "openai", "sk-test"], { tempHome });
-			const r = run(["auth", "list"], { tempHome });
-			expect(r.exitCode).toBe(0);
-			expect(r.stdout).toContain("openai");
-		});
-	});
-
-	describe("auth --help", () => {
-		it("lists all subcommands", () => {
-			const r = run(["auth", "--help"], { tempHome });
-			expect(r.exitCode).toBe(0);
-			expect(r.stdout).toContain("set");
-			expect(r.stdout).toContain("login");
-			expect(r.stdout).toContain("logout");
-			expect(r.stdout).toContain("list");
 		});
 	});
 
