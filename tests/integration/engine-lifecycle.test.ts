@@ -25,6 +25,7 @@ import {
 	type SessionFactory,
 } from "../../src/engine.js";
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import { evAgentStart, evAgentEnd, evMessageStart } from "../helpers/events.js";
 
 /** How many restarts are allowed */
 const MAX_CRASH_RESTARTS = 3;
@@ -269,7 +270,7 @@ describe("Engine lifecycle (real server)", () => {
 		try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
 	});
 
-	async function startEngine(opts: { skipPrompt?: boolean } = {}) {
+	async function startEngine(opts: { skipPrompt?: boolean; backoffBase?: number; backoffMax?: number } = {}) {
 		const { factory, session } = mockSessionFactory();
 		const result = await start({
 			cwd: tempDir,
@@ -277,6 +278,8 @@ describe("Engine lifecycle (real server)", () => {
 			model: "test-model",
 			sessionFactory: factory,
 			skipPrompt: opts.skipPrompt ?? true,
+			backoffBase: opts.backoffBase ?? 10,   // fast by default in tests
+			backoffMax: opts.backoffMax ?? 50,
 		});
 		port = parseInt(new URL(result.url).port);
 		token = result.token;
@@ -332,7 +335,7 @@ describe("Engine lifecycle (real server)", () => {
 	describe("agent event flow", () => {
 		it("agent_start → streaming state", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			const state = getState();
 			expect(state.streaming).toBe(true);
@@ -340,8 +343,8 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("agent_start then agent_end → waiting state", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			const state = getState();
 			expect(state.streaming).toBe(false);
@@ -360,7 +363,7 @@ describe("Engine lifecycle (real server)", () => {
 			});
 
 			expect(readyFired).toBe(false);
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 			expect(readyFired).toBe(true);
 		});
 
@@ -375,10 +378,10 @@ describe("Engine lifecycle (real server)", () => {
 				onReady: () => { readyCount++; },
 			});
 
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			expect(readyCount).toBe(1);
 		});
@@ -390,67 +393,71 @@ describe("Engine lifecycle (real server)", () => {
 		it("client receives init on connect", async () => {
 			await startEngine();
 			const ws = await connectWs(port, token);
-
-			const init = await ws.waitForMessage((m) => m.type === "init");
-			expect(init).toBeDefined();
-			expect(init.agentRunning).toBe(true);
-
-			ws.close();
+			try {
+				const init = await ws.waitForMessage((m) => m.type === "init");
+				expect(init).toBeDefined();
+				expect(init.agentRunning).toBe(true);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("client receives agent events in real time", async () => {
 			await startEngine();
 			const ws = await connectWs(port, token);
+			try {
+				// Fire an agent_start event
+				handleEvent(evAgentStart());
 
-			// Fire an agent_start event
-			handleEvent({ type: "agent_start" } as any);
-
-			const msg = await ws.waitForMessage(
-				(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
-			);
-			expect(msg).toBeDefined();
-
-			ws.close();
+				const msg = await ws.waitForMessage(
+					(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
+				);
+				expect(msg).toBeDefined();
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("late-joining client gets full event history", async () => {
 			await startEngine();
 
 			// Events happen with no clients connected
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			// Client connects late
 			const ws = await connectWs(port, token);
+			try {
+				// Wait for init + replayed events
+				await ws.waitForMessage((m) => m.type === "init");
+				// Give time for history replay
+				await new Promise((r) => setTimeout(r, 200));
 
-			// Wait for init + replayed events
-			await ws.waitForMessage((m) => m.type === "init");
-			// Give time for history replay
-			await new Promise((r) => setTimeout(r, 200));
-
-			const agentStartMsgs = ws.messages.filter(
-				(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
-			);
-			expect(agentStartMsgs.length).toBeGreaterThanOrEqual(1);
-
-			ws.close();
+				const agentStartMsgs = ws.messages.filter(
+					(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
+				);
+				expect(agentStartMsgs.length).toBeGreaterThanOrEqual(1);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("multiple clients all receive events", async () => {
 			await startEngine();
 			const ws1 = await connectWs(port, token);
 			const ws2 = await connectWs(port, token);
+			try {
+				handleEvent(evAgentStart());
+				await new Promise((r) => setTimeout(r, 100));
 
-			handleEvent({ type: "agent_start" } as any);
-			await new Promise((r) => setTimeout(r, 100));
-
-			const has1 = ws1.messages.some((m) => m.type === "rpc_event" && m.event?.type === "agent_start");
-			const has2 = ws2.messages.some((m) => m.type === "rpc_event" && m.event?.type === "agent_start");
-			expect(has1).toBe(true);
-			expect(has2).toBe(true);
-
-			ws1.close();
-			ws2.close();
+				const has1 = ws1.messages.some((m) => m.type === "rpc_event" && m.event?.type === "agent_start");
+				const has2 = ws2.messages.some((m) => m.type === "rpc_event" && m.event?.type === "agent_start");
+				expect(has1).toBe(true);
+				expect(has2).toBe(true);
+			} finally {
+				ws1.close();
+				ws2.close();
+			}
 		});
 
 		it("client count tracks connections and disconnections", async () => {
@@ -492,46 +499,53 @@ describe("Engine lifecycle (real server)", () => {
 	describe("client actions", () => {
 		it("client can send chat via WebSocket", async () => {
 			const session = await startEngine();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			const ws = await connectWs(port, token);
-			ws.send({ type: "prompt", text: "explain auth" });
+			try {
+				ws.send({ type: "prompt", text: "explain auth" });
 
-			// Give the engine a moment to dispatch the prompt to the session.
-			// The mock session's prompt() is a no-op, so no agent_start fires,
-			// but the engine must remain running and not crash.
-			await new Promise((r) => setTimeout(r, 100));
+				// Give the engine a moment to dispatch the prompt to the session.
+				// The mock session's prompt() is a no-op, so no agent_start fires,
+				// but the engine must remain running and not crash.
+				await new Promise((r) => setTimeout(r, 100));
 
-			expect(getState().running).toBe(true);
-			ws.close();
+				expect(getState().running).toBe(true);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("client can send abort via WebSocket", async () => {
 			const session = await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			expect(getState().streaming).toBe(true);
 
 			const ws = await connectWs(port, token);
-			ws.send({ type: "abort" });
-			await new Promise((r) => setTimeout(r, 100));
-
-			ws.close();
+			try {
+				ws.send({ type: "abort" });
+				await new Promise((r) => setTimeout(r, 100));
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("client can send stop via WebSocket", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			const ws = await connectWs(port, token);
-			ws.send({ type: "stop" });
+			try {
+				ws.send({ type: "stop" });
 
-			const msg = await ws.waitForMessage((m) => m.type === "agent_stopped");
-			expect(msg).toBeDefined();
-			expect(getState().agentReady).toBe(false);
-
-			ws.close();
+				const msg = await ws.waitForMessage((m) => m.type === "agent_stopped");
+				expect(msg).toBeDefined();
+				expect(getState().agentReady).toBe(false);
+			} finally {
+				ws.close();
+			}
 		});
 	});
 
@@ -547,7 +561,7 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("stop while streaming", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 			expect(getState().streaming).toBe(true);
 
 			stop();
@@ -557,8 +571,8 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("stop while waiting", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			stop();
 			expect(getState().running).toBe(false);
@@ -566,15 +580,16 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("stop broadcasts to all connected clients", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			const ws = await connectWs(port, token);
-
-			stop();
-			const msg = await ws.waitForMessage((m) => m.type === "agent_stopped");
-			expect(msg).toBeDefined();
-
-			ws.close();
+			try {
+				stop();
+				const msg = await ws.waitForMessage((m) => m.type === "agent_stopped");
+				expect(msg).toBeDefined();
+			} finally {
+				ws.close();
+			}
 		});
 	});
 
@@ -584,9 +599,9 @@ describe("Engine lifecycle (real server)", () => {
 		it("events accumulate in order", async () => {
 			await startEngine();
 
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
+			handleEvent(evAgentStart());
 
 			const state = getState();
 			expect(state.eventHistoryLength).toBeGreaterThanOrEqual(3);
@@ -594,7 +609,7 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("stop event is included in history", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			stop();
 
@@ -615,9 +630,9 @@ describe("Engine lifecycle (real server)", () => {
 
 			// Client connects
 			const ws = await connectWs(port, token);
-
+			try {
 			// 1. Agent starts exploring
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 			const startMsg = await ws.waitForMessage(
 				(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
 			);
@@ -663,7 +678,7 @@ describe("Engine lifecycle (real server)", () => {
 				},
 			} as any);
 
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentEnd());
 
 			await ws.waitForMessage(
 				(m) => m.type === "rpc_event" && m.event?.type === "agent_end"
@@ -686,8 +701,9 @@ describe("Engine lifecycle (real server)", () => {
 			const finalState = getState();
 			expect(finalState.running).toBe(false);
 			expect(finalState.agentReady).toBe(false);
-
-			ws.close();
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("client disconnect and reconnect preserves history", async () => {
@@ -697,8 +713,8 @@ describe("Engine lifecycle (real server)", () => {
 			const ws1 = await connectWs(port, token);
 
 			// Events happen
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 			await new Promise((r) => setTimeout(r, 50));
 
 			// Client 1 disconnects
@@ -708,21 +724,23 @@ describe("Engine lifecycle (real server)", () => {
 			expect(getState().clientCount).toBe(0);
 
 			// More events happen while disconnected
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			// Client 2 connects
 			const ws2 = await connectWs(port, token);
-			await new Promise((r) => setTimeout(r, 100));
+			try {
+				await new Promise((r) => setTimeout(r, 100));
 
-			// Should have init + all 4 events replayed
-			const agentEvents = ws2.messages.filter(
-				(m) => m.type === "rpc_event" &&
-					(m.event?.type === "agent_start" || m.event?.type === "agent_end")
-			);
-			expect(agentEvents.length).toBe(4);
-
-			ws2.close();
+				// Should have init + all 4 events replayed
+				const agentEvents = ws2.messages.filter(
+					(m) => m.type === "rpc_event" &&
+						(m.event?.type === "agent_start" || m.event?.type === "agent_end")
+				);
+				expect(agentEvents.length).toBe(4);
+			} finally {
+				ws2.close();
+			}
 		});
 	});
 
@@ -731,65 +749,68 @@ describe("Engine lifecycle (real server)", () => {
 	describe("concurrency", () => {
 		it("multiple clients sending messages simultaneously", async () => {
 			const session = await startEngine();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			const ws1 = await connectWs(port, token);
 			const ws2 = await connectWs(port, token);
 			const ws3 = await connectWs(port, token);
+			try {
+				// All send messages at once
+				ws1.send({ type: "prompt", text: "question 1" });
+				ws2.send({ type: "prompt", text: "question 2" });
+				ws3.send({ type: "prompt", text: "question 3" });
 
-			// All send messages at once
-			ws1.send({ type: "prompt", text: "question 1" });
-			ws2.send({ type: "prompt", text: "question 2" });
-			ws3.send({ type: "prompt", text: "question 3" });
+				await new Promise((r) => setTimeout(r, 200));
 
-			await new Promise((r) => setTimeout(r, 200));
-
-			// Engine should not crash
-			expect(getState().running).toBe(true);
-
-			ws1.close();
-			ws2.close();
-			ws3.close();
+				// Engine should not crash
+				expect(getState().running).toBe(true);
+			} finally {
+				ws1.close();
+				ws2.close();
+				ws3.close();
+			}
 		});
 
 		it("client sends stop while another sends chat", async () => {
 			const session = await startEngine();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			const ws1 = await connectWs(port, token);
 			const ws2 = await connectWs(port, token);
+			try {
+				// One sends chat, the other sends stop
+				ws1.send({ type: "prompt", text: "question" });
+				ws2.send({ type: "stop" });
 
-			// One sends chat, the other sends stop
-			ws1.send({ type: "prompt", text: "question" });
-			ws2.send({ type: "stop" });
+				await new Promise((r) => setTimeout(r, 200));
 
-			await new Promise((r) => setTimeout(r, 200));
-
-			// Agent should be stopped
-			expect(getState().agentReady).toBe(false);
-
-			ws1.close();
-			ws2.close();
+				// Agent should be stopped
+				expect(getState().agentReady).toBe(false);
+			} finally {
+				ws1.close();
+				ws2.close();
+			}
 		});
 
 		it("events arrive while client is connecting", async () => {
 			await startEngine();
 
 			// Fire events in rapid succession
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			// Client connects during events
 			const ws = await connectWs(port, token);
+			try {
+				handleEvent(evAgentEnd());
+				await new Promise((r) => setTimeout(r, 100));
 
-			handleEvent({ type: "agent_end" } as any);
-			await new Promise((r) => setTimeout(r, 100));
-
-			// Client should have all events (init + history + live)
-			expect(ws.messages.length).toBeGreaterThan(0);
-
-			ws.close();
+				// Client should have all events (init + history + live)
+				expect(ws.messages.length).toBeGreaterThan(0);
+			} finally {
+				ws.close();
+			}
 		});
 	});
 
@@ -798,24 +819,25 @@ describe("Engine lifecycle (real server)", () => {
 	describe("crash recovery", () => {
 		it("first crash broadcasts exit and restarting events", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			const ws = await connectWs(port, token);
+			try {
+				// Simulate crash
+				handleCrash("out of memory");
 
-			// Simulate crash
-			handleCrash("out of memory");
+				const exitMsg = await ws.waitForMessage((m) => m.type === "agent_exit");
+				expect(exitMsg.error).toBe("out of memory");
+				expect(exitMsg.crashCount).toBe(1);
+				expect(exitMsg.willRestart).toBe(true);
+				expect(exitMsg.restartIn).toBeGreaterThan(0);
 
-			const exitMsg = await ws.waitForMessage((m) => m.type === "agent_exit");
-			expect(exitMsg.error).toBe("out of memory");
-			expect(exitMsg.crashCount).toBe(1);
-			expect(exitMsg.willRestart).toBe(true);
-			expect(exitMsg.restartIn).toBeGreaterThan(0);
-
-			const restartMsg = await ws.waitForMessage((m) => m.type === "agent_restarting");
-			expect(restartMsg.attempt).toBe(1);
-			expect(restartMsg.maxAttempts).toBe(MAX_CRASH_RESTARTS);
-
-			ws.close();
+				const restartMsg = await ws.waitForMessage((m) => m.type === "agent_restarting");
+				expect(restartMsg.attempt).toBe(1);
+				expect(restartMsg.maxAttempts).toBe(MAX_CRASH_RESTARTS);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("crash recovery creates new session after backoff", async () => {
@@ -824,6 +846,8 @@ describe("Engine lifecycle (real server)", () => {
 				cwd: tempDir,
 				sessionFactory: factory,
 				skipPrompt: true,
+				backoffBase: 10,
+				backoffMax: 50,
 			});
 			port = parseInt(new URL(result.url).port);
 			token = result.token;
@@ -833,53 +857,57 @@ describe("Engine lifecycle (real server)", () => {
 			// Simulate crash — the restart timer will call factory again
 			handleCrash("network error");
 
-			// Wait for backoff (first crash = 2s)
-			await waitForCondition(() => sessions.length === 2, 5000);
+			// Wait for backoff (fast in tests: 10ms)
+			await waitForCondition(() => sessions.length === 2, 500);
 			expect(sessions.length).toBe(2);
 			expect(getState().agentReady).toBe(true);
 		});
 
 		it("exponential backoff increases with each crash", async () => {
-			await startEngine();
+			// Use explicit backoff values so assertions are readable
+			await startEngine({ backoffBase: 100, backoffMax: 1000 });
 			const ws = await connectWs(port, token);
 
-			// Crash 1: 2s backoff
-			handleCrash("error1");
-			const exit1 = await ws.waitForMessage((m) => m.type === "agent_exit" && m.crashCount === 1);
-			expect(exit1.restartIn).toBe(2000);
+			try {
+				// Crash 1: 100ms backoff
+				handleCrash("error1");
+				const exit1 = await ws.waitForMessage((m) => m.type === "agent_exit" && m.crashCount === 1);
+				expect(exit1.restartIn).toBe(100);
 
-			// Crash 2: 4s backoff
-			handleCrash("error2");
-			const exit2 = await ws.waitForMessage((m) => m.type === "agent_exit" && m.crashCount === 2);
-			expect(exit2.restartIn).toBe(4000);
+				// Crash 2: 200ms backoff
+				handleCrash("error2");
+				const exit2 = await ws.waitForMessage((m) => m.type === "agent_exit" && m.crashCount === 2);
+				expect(exit2.restartIn).toBe(200);
 
-			// Crash 3: 8s backoff
-			handleCrash("error3");
-			const exit3 = await ws.waitForMessage((m) => m.type === "agent_exit" && m.crashCount === 3);
-			expect(exit3.restartIn).toBe(8000);
-
-			ws.close();
+				// Crash 3: 400ms backoff
+				handleCrash("error3");
+				const exit3 = await ws.waitForMessage((m) => m.type === "agent_exit" && m.crashCount === 3);
+				expect(exit3.restartIn).toBe(400);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("gives up after MAX_CRASH_RESTARTS + 1 crashes", async () => {
 			await startEngine();
 			const ws = await connectWs(port, token);
+			try {
+				// Crash up to the limit
+				for (let i = 0; i < MAX_CRASH_RESTARTS; i++) {
+					handleCrash(`crash-${i + 1}`);
+				}
 
-			// Crash up to the limit
-			for (let i = 0; i < MAX_CRASH_RESTARTS; i++) {
-				handleCrash(`crash-${i + 1}`);
+				// One more crash beyond the limit
+				handleCrash("final-crash");
+
+				const exitMsg = await ws.waitForMessage(
+					(m) => m.type === "agent_exit" && m.willRestart === false
+				);
+				expect(exitMsg.willRestart).toBe(false);
+				expect(exitMsg.restartIn).toBeNull();
+			} finally {
+				ws.close();
 			}
-
-			// One more crash beyond the limit
-			handleCrash("final-crash");
-
-			const exitMsg = await ws.waitForMessage(
-				(m) => m.type === "agent_exit" && m.willRestart === false
-			);
-			expect(exitMsg.willRestart).toBe(false);
-			expect(exitMsg.restartIn).toBeNull();
-
-			ws.close();
 		});
 
 		it("stop during restart backoff cancels the restart", async () => {
@@ -923,47 +951,52 @@ describe("Engine lifecycle (real server)", () => {
 				cwd: tempDir,
 				sessionFactory: failingFactory,
 				skipPrompt: true,
+				backoffBase: 10,
+				backoffMax: 50,
 			});
 			port = parseInt(new URL(result.url).port);
 			token = result.token;
 
 			const ws = await connectWs(port, token);
+			try {
+				// First crash — restart will try but factory throws
+				handleCrash("initial error");
 
-			// First crash — restart will try but factory throws
-			handleCrash("initial error");
-
-			// Wait for the restart attempt (2s backoff)
-			// The failed restart will trigger another crash
-			const secondExit = await ws.waitForMessage(
-				(m) => m.type === "agent_exit" && m.crashCount === 2,
-				6000
-			);
-			expect(secondExit).toBeDefined();
-
-			ws.close();
+				// Wait for the restart attempt (fast backoff in tests: 10ms)
+				// The failed restart will trigger another crash
+				const secondExit = await ws.waitForMessage(
+					(m) => m.type === "agent_exit" && m.crashCount === 2,
+					1000
+				);
+				expect(secondExit).toBeDefined();
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("client receives all crash events in real time", async () => {
 			await startEngine();
 
 			const ws = await connectWs(port, token);
-			handleEvent({ type: "agent_start" } as any);
+			try {
+				handleEvent(evAgentStart());
 
-			// Crash
-			handleCrash("connection reset");
+				// Crash
+				handleCrash("connection reset");
 
-			const events: string[] = [];
-			await ws.waitForMessage((m) => {
-				if (m.type === "agent_exit" || m.type === "agent_restarting") {
-					events.push(m.type);
-				}
-				return events.length >= 2;
-			});
+				const events: string[] = [];
+				await ws.waitForMessage((m) => {
+					if (m.type === "agent_exit" || m.type === "agent_restarting") {
+						events.push(m.type);
+					}
+					return events.length >= 2;
+				});
 
-			expect(events).toContain("agent_exit");
-			expect(events).toContain("agent_restarting");
-
-			ws.close();
+				expect(events).toContain("agent_exit");
+				expect(events).toContain("agent_restarting");
+			} finally {
+				ws.close();
+			}
 		});
 	});
 
@@ -973,44 +1006,46 @@ describe("Engine lifecycle (real server)", () => {
 		it("handleEvent after stop is a no-op", async () => {
 			await startEngine();
 
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			// Connect client and wait for initial messages (init + history)
 			const ws = await connectWs(port, token);
-			await new Promise((r) => setTimeout(r, 100));
+			try {
+				await new Promise((r) => setTimeout(r, 100));
 
-			stop();
+				stop();
 
-			const afterStopIdx = ws.messages.length;
+				const afterStopIdx = ws.messages.length;
 
-			// These events should be silently dropped (intentionalStop guard)
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
-			handleEvent({
-				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", delta: "leaked text" },
-			} as any);
+				// These events should be silently dropped (intentionalStop guard)
+				handleEvent(evAgentStart());
+				handleEvent(evAgentEnd());
+				handleEvent({
+					type: "message_update",
+					assistantMessageEvent: { type: "text_delta", delta: "leaked text" },
+				} as any);
 
-			await new Promise((r) => setTimeout(r, 100));
+				await new Promise((r) => setTimeout(r, 100));
 
-			// Only agent_stopped should appear after the stop
-			const afterStopMsgs = ws.messages.slice(afterStopIdx);
-			const leakedAgentStarts = afterStopMsgs.filter(
-				(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
-			);
-			expect(leakedAgentStarts.length).toBe(0);
+				// Only agent_stopped should appear after the stop
+				const afterStopMsgs = ws.messages.slice(afterStopIdx);
+				const leakedAgentStarts = afterStopMsgs.filter(
+					(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
+				);
+				expect(leakedAgentStarts.length).toBe(0);
 
-			// But agent_stopped should be there
-			const stoppedMsgs = afterStopMsgs.filter((m) => m.type === "agent_stopped");
-			expect(stoppedMsgs.length).toBe(1);
-
-			ws.close();
+				// But agent_stopped should be there
+				const stoppedMsgs = afterStopMsgs.filter((m) => m.type === "agent_stopped");
+				expect(stoppedMsgs.length).toBe(1);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("chat after stop throws or is rejected", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 			stop();
 
 			// Chat should fail gracefully (no session)
@@ -1049,10 +1084,11 @@ describe("Engine lifecycle (real server)", () => {
 		it("full message lifecycle: start → updates → tool → end", async () => {
 			await startEngine();
 			const ws = await connectWs(port, token);
+			try {
 			// Wait until client is fully registered (receives init)
 			await ws.waitForMessage((m) => m.type === "init");
 
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			// Message start
 			handleEvent({
@@ -1097,7 +1133,7 @@ describe("Engine lifecycle (real server)", () => {
 				},
 			} as any);
 
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentEnd());
 
 			// Wait for all events to arrive
 			await ws.waitForMessage(
@@ -1114,13 +1150,14 @@ describe("Engine lifecycle (real server)", () => {
 			expect(eventTypes).toContain("tool_execution_end");
 			expect(eventTypes).toContain("message_end");
 			expect(eventTypes).toContain("agent_end");
-
-			ws.close();
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("tool write tracking — Write of .md file triggers render/doc_ready", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			// Create the .md file on disk so the detection logic finds it
 			const mdPath = path.join(tempDir, ".storyof", "sessions", "test", "doc.md");
@@ -1156,7 +1193,7 @@ describe("Engine lifecycle (real server)", () => {
 	describe("combined scenarios", () => {
 		it("crash during streaming clears streaming state", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 			expect(getState().streaming).toBe(true);
 
 			handleCrash("segfault");
@@ -1188,7 +1225,7 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("abort during streaming stops the stream", async () => {
 			const session = await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 			expect(getState().streaming).toBe(true);
 
 			await abort();
@@ -1223,32 +1260,34 @@ describe("Engine lifecycle (real server)", () => {
 
 		it("events during stop are not broadcast to remaining clients", async () => {
 			await startEngine();
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 
 			const ws = await connectWs(port, token);
-			// Wait for init + agent_start history to arrive
-			await new Promise((r) => setTimeout(r, 100));
-			const preStopCount = ws.messages.length;
+			try {
+				// Wait for init + agent_start history to arrive
+				await new Promise((r) => setTimeout(r, 100));
+				const preStopCount = ws.messages.length;
 
-			// Stop, then try to inject events
-			stop();
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "message_start", message: { role: "assistant" } } as any);
+				// Stop, then try to inject events
+				stop();
+				handleEvent(evAgentStart());
+				handleEvent(evMessageStart());
 
-			await new Promise((r) => setTimeout(r, 100));
+				await new Promise((r) => setTimeout(r, 100));
 
-			// Check that the only new message is agent_stopped (from stop())
-			const postStopMessages = ws.messages.slice(preStopCount);
-			const agentStartAfterStop = postStopMessages.filter(
-				(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
-			);
-			expect(agentStartAfterStop.length).toBe(0);
+				// Check that the only new message is agent_stopped (from stop())
+				const postStopMessages = ws.messages.slice(preStopCount);
+				const agentStartAfterStop = postStopMessages.filter(
+					(m) => m.type === "rpc_event" && m.event?.type === "agent_start"
+				);
+				expect(agentStartAfterStop.length).toBe(0);
 
-			// agent_stopped should be there
-			const stoppedMsg = postStopMessages.find((m) => m.type === "agent_stopped");
-			expect(stoppedMsg).toBeDefined();
-
-			ws.close();
+				// agent_stopped should be there
+				const stoppedMsg = postStopMessages.find((m) => m.type === "agent_stopped");
+				expect(stoppedMsg).toBeDefined();
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("HTTP endpoints reflect crash state", async () => {
@@ -1280,46 +1319,50 @@ describe("Engine lifecycle (real server)", () => {
 				cwd: tempDir,
 				sessionFactory: factory,
 				skipPrompt: true,
+				backoffBase: 10,
+				backoffMax: 50,
 			});
 			port = parseInt(new URL(result.url).port);
 			token = result.token;
 
 			const ws = await connectWs(port, token);
+			try {
+				// 1. Agent starts exploring
+				handleEvent(evAgentStart());
 
-			// 1. Agent starts exploring
-			handleEvent({ type: "agent_start" } as any);
+				// 2. Agent streams a document
+				handleEvent({
+					type: "message_update",
+					assistantMessageEvent: { type: "text_delta", delta: "# Analysis" },
+				} as any);
 
-			// 2. Agent streams a document
-			handleEvent({
-				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", delta: "# Analysis" },
-			} as any);
+				handleEvent(evAgentEnd());
 
-			handleEvent({ type: "agent_end" } as any);
+				// 3. Agent crashes
+				handleCrash("connection timeout");
 
-			// 3. Agent crashes
-			handleCrash("connection timeout");
+				const exitMsg = await ws.waitForMessage((m) => m.type === "agent_exit");
+				expect(exitMsg.willRestart).toBe(true);
 
-			const exitMsg = await ws.waitForMessage((m) => m.type === "agent_exit");
-			expect(exitMsg.willRestart).toBe(true);
+				// 4. Wait for auto-restart (fast backoff in tests: 10ms)
+				await waitForCondition(() => sessions.length === 2, 500);
 
-			// 4. Wait for auto-restart (2s backoff)
-			await waitForCondition(() => sessions.length === 2, 5000);
+				// 5. Agent is back
+				expect(getState().agentReady).toBe(true);
+				expect(getState().crashCount).toBe(1);
 
-			// 5. Agent is back
-			expect(getState().agentReady).toBe(true);
-			expect(getState().crashCount).toBe(1);
+				// 6. User sends a follow-up
+				ws.send({ type: "prompt", text: "explain more" });
+				await new Promise((r) => setTimeout(r, 100));
 
-			// 6. User sends a follow-up
-			ws.send({ type: "prompt", text: "explain more" });
-			await new Promise((r) => setTimeout(r, 100));
+				// 7. User stops
+				ws.send({ type: "stop" });
+				await ws.waitForMessage((m) => m.type === "agent_stopped");
 
-			// 7. User stops
-			ws.send({ type: "stop" });
-			await ws.waitForMessage((m) => m.type === "agent_stopped");
-
-			expect(getState().running).toBe(false);
-			ws.close();
+				expect(getState().running).toBe(false);
+			} finally {
+				ws.close();
+			}
 		});
 	});
 
@@ -1372,16 +1415,17 @@ describe("Engine lifecycle (real server)", () => {
 
 			// Connect a WebSocket client
 			const ws = await connectWs(port, token);
+			try {
+				// Wait for the chat_history message
+				const chatHistory = await ws.waitForMessage((m) => m.type === "chat_history", 2000);
 
-			// Wait for the chat_history message
-			const chatHistory = await ws.waitForMessage((m) => m.type === "chat_history", 2000);
-
-			expect(chatHistory.messages).toHaveLength(2);
-			expect(chatHistory.messages[0]).toEqual({ role: "user", text: "How does auth work?" });
-			expect(chatHistory.messages[1]).toEqual({ role: "assistant", text: "## Authentication\n\nAuth uses JWT tokens." });
-			expect(chatHistory.isFullHistory).toBe(false); // only sent RECENT_CHAT_LIMIT
-
-			ws.close();
+				expect(chatHistory.messages).toHaveLength(2);
+				expect(chatHistory.messages[0]).toEqual({ role: "user", text: "How does auth work?" });
+				expect(chatHistory.messages[1]).toEqual({ role: "assistant", text: "## Authentication\n\nAuth uses JWT tokens." });
+				expect(chatHistory.isFullHistory).toBe(false); // only sent RECENT_CHAT_LIMIT
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("does not send chat_history when no chat messages exist", async () => {
@@ -1396,16 +1440,17 @@ describe("Engine lifecycle (real server)", () => {
 			);
 
 			const ws = await connectWs(port, token);
+			try {
+				// Wait for init message
+				await ws.waitForMessage((m) => m.type === "init", 2000);
+				// Give it a moment — chat_history should NOT arrive
+				await new Promise((r) => setTimeout(r, 200));
 
-			// Wait for init message
-			await ws.waitForMessage((m) => m.type === "init", 2000);
-			// Give it a moment — chat_history should NOT arrive
-			await new Promise((r) => setTimeout(r, 200));
-
-			const chatHistoryMsgs = ws.messages.filter((m) => m.type === "chat_history");
-			expect(chatHistoryMsgs).toHaveLength(0);
-
-			ws.close();
+				const chatHistoryMsgs = ws.messages.filter((m) => m.type === "chat_history");
+				expect(chatHistoryMsgs).toHaveLength(0);
+			} finally {
+				ws.close();
+			}
 		});
 
 		it("reconnecting client gets chat history", async () => {
@@ -1430,13 +1475,15 @@ describe("Engine lifecycle (real server)", () => {
 
 			// Second client connects — should get chat history
 			const ws2 = await connectWs(port, token);
-			const chatHistory = await ws2.waitForMessage((m) => m.type === "chat_history", 2000);
+			try {
+				const chatHistory = await ws2.waitForMessage((m) => m.type === "chat_history", 2000);
 
-			expect(chatHistory.messages).toHaveLength(2);
-			expect(chatHistory.messages[0]).toEqual({ role: "user", text: "What is X?" });
-			expect(chatHistory.messages[1]).toEqual({ role: "assistant", text: "X is a module." });
-
-			ws2.close();
+				expect(chatHistory.messages).toHaveLength(2);
+				expect(chatHistory.messages[0]).toEqual({ role: "user", text: "What is X?" });
+				expect(chatHistory.messages[1]).toEqual({ role: "assistant", text: "X is a module." });
+			} finally {
+				ws2.close();
+			}
 		});
 
 		it("load_history request returns full chat history", async () => {
@@ -1508,8 +1555,8 @@ describe("Engine lifecycle (real server)", () => {
 
 			// Simulate exploration turn
 			session._messages.push(userMsg("Explore..."));
-			handleEvent({ type: "agent_start" } as any);
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentStart());
+			handleEvent(evAgentEnd());
 
 			// Add doc response and chat
 			session._messages.push(
@@ -1518,9 +1565,9 @@ describe("Engine lifecycle (real server)", () => {
 			);
 
 			// Simulate agent turn for chat response
-			handleEvent({ type: "agent_start" } as any);
+			handleEvent(evAgentStart());
 			session._messages.push(assistantTextMsg("Auth uses OAuth2."));
-			handleEvent({ type: "agent_end" } as any);
+			handleEvent(evAgentEnd());
 
 			// Connect a fresh client — should see chat history
 			const ws = await connectWs(port, token);
